@@ -1,0 +1,33 @@
+[project]
+name = "bellwether"
+version = "0.1.0"
+description = "A human-risk platform: score employee security behavior in real time and intervene."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "DTZ", "RUF"]
+# SLF001 would flag the tests reaching into Simulator._phish_chain, which is
+# deliberate: the chain branch probabilities are the part most worth pinning.
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["SLF001"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+# The generator's rng-heavy code and the Kafka client's untyped surface aren't
+# worth fighting the checker over.
+[[tool.mypy.overrides]]
+module = ["confluent_kafka.*"]
+ignore_missing_imports = true
