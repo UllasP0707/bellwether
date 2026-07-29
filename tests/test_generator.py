@@ -132,6 +132,30 @@ def test_nobody_both_clicks_and_reports_the_same_delivery() -> None:
         )
 
 
+def test_score_distribution_is_long_tailed() -> None:
+    """Most employees low, a few genuinely high.
+
+    This is the property that makes a risk platform worth building. If the
+    generator produced a bell curve around the mean, the dashboard would rank
+    noise and the demo would prove nothing.
+    """
+    people, events = _backfill(days=30, size=200)
+    by_employee: dict[str, list] = defaultdict(list)
+    for event in events:
+        by_employee[event.employee_id].append(event)
+
+    scores = sorted(
+        score_events(m.employee, by_employee.get(m.employee.employee_id, []), as_of=END).score
+        for m in people
+    )
+
+    median = scores[len(scores) // 2]
+    top = scores[-1]
+    assert median < 35, f"median score {median} is too high; everyone looks risky"
+    assert top > 55, f"top score {top} is too low; nobody stands out"
+    assert top > median * 2
+
+
 def test_all_generated_signals_are_priced() -> None:
     """Belt and braces: the generator can't emit something the scorer ignores."""
     from bellwether.scoring.catalog import CATALOG

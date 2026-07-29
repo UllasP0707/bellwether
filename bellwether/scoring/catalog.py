@@ -98,9 +98,11 @@ CATALOG: dict[SignalType, SignalSpec] = dict(
         _spec(
             SignalType.MFA_PUSH_DENIED,
             RiskCategory.CREDENTIAL_HYGIENE,
-            1.0,
+            0.4,
             7.0,
-            "Denied an MFA push. Weakly risky alone — usually just a stale session.",
+            "Denied an MFA push. Near-zero weight on purpose: it is usually a "
+            "stale session, and it is frequent. See the note on frequency vs. "
+            "severity in DESIGN.md.",
         ),
         _spec(
             SignalType.MFA_PUSH_FLOOD,
@@ -133,12 +135,17 @@ CATALOG: dict[SignalType, SignalSpec] = dict(
             "Successful logins from geographically incompatible locations.",
         ),
         # --- Data handling -------------------------------------------------
+        # Routine for most roles and very frequent, so it is priced near zero.
+        # At its real arrival rate a weight of 2.0 accumulated more decayed
+        # score over 30 days than a credential submission — which made the
+        # median employee look critical and buried the people who mattered.
         _spec(
             SignalType.FILE_SHARED_EXTERNALLY,
             RiskCategory.DATA_HANDLING,
-            2.0,
+            0.3,
             14.0,
-            "Shared a file with a named external address. Routine for most roles.",
+            "Shared a file with a named external address. Routine for most roles; "
+            "only useful as a volume baseline, not as risk in itself.",
         ),
         _spec(
             SignalType.FILE_SHARED_PUBLIC_LINK,
@@ -165,9 +172,10 @@ CATALOG: dict[SignalType, SignalSpec] = dict(
         _spec(
             SignalType.USB_MASS_STORAGE_MOUNTED,
             RiskCategory.DATA_HANDLING,
-            4.0,
+            1.2,
             14.0,
-            "Mounted removable storage on a managed device.",
+            "Mounted removable storage on a managed device. Suspicious in "
+            "combination, unremarkable alone.",
         ),
         # --- Access hygiene ------------------------------------------------
         _spec(
