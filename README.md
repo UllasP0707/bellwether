@@ -1,5 +1,7 @@
 # Bellwether
 
+[![ci](https://github.com/UllasP0707/bellwether/actions/workflows/ci.yml/badge.svg)](https://github.com/UllasP0707/bellwether/actions/workflows/ci.yml)
+
 A human-risk platform: ingest employee security behavior, score it in real time,
 and intervene before the behavior becomes a breach.
 

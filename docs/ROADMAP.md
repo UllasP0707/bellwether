@@ -14,8 +14,20 @@ parity test that justifies the shared catalog can't exist until both are built.
 - [x] Synthetic population: 6 behavioral personas, dimension-driven assignment
 - [x] Behavior simulator: backfill, live, 4 scripted incident scenarios
 - [x] JSONL lake sink, Kafka sink, fanout sink
-- [x] CLI: `population`, `backfill`, `live`, `incident`, `score`, `catalog`
-- [x] 49 tests; ruff and mypy --strict clean
+- [x] CLI: `population`, `backfill`, `live`, `incident`, `score`, `catalog`, `consume`
+- [x] 49 tests; ruff, ruff format and mypy --strict clean, all enforced in CI
+- [x] Local stack verified end to end against a real broker
+
+The last item is what actually closed day 1: the producer path existed but had
+never run against Kafka. Verified by producing a 30-day backfill and reading it
+all back — 8,606 events, broker high-watermarks matching the producer count
+exactly, spread across all 6 partitions (1284–1589 each, as employee-key hashing
+should give), every message deserializing back into a valid `BehaviorEvent` with
+its key matching `employee_id`.
+
+The demo narrative also runs end to end: E0042 scores 35.94 (moderate, driven by
+data handling), the scripted phishing chain lands, and they move to 78.68 (high,
+driven by phishing susceptibility).
 
 ## Day 2 — ingestion
 
