@@ -299,9 +299,7 @@ class Simulator:
         return SCENARIOS[scenario](self, employee_id, at)
 
 
-def _phish_credential_chain(
-    sim: Simulator, employee_id: str, at: datetime
-) -> list[BehaviorEvent]:
+def _phish_credential_chain(sim: Simulator, employee_id: str, at: datetime) -> list[BehaviorEvent]:
     """The demo's spine: delivery, click, credential submission, ~2 minutes."""
     return [
         sim._event(employee_id, SignalType.PHISH_SIM_DELIVERED, at),
@@ -326,12 +324,8 @@ def _data_exfil(sim: Simulator, employee_id: str, at: datetime) -> list[Behavior
     """Staged exfiltration: gather, expose, carry out."""
     return [
         sim._event(employee_id, SignalType.BULK_DOWNLOAD_DETECTED, at),
-        sim._event(
-            employee_id, SignalType.FILE_SHARED_PUBLIC_LINK, at + timedelta(minutes=4)
-        ),
-        sim._event(
-            employee_id, SignalType.USB_MASS_STORAGE_MOUNTED, at + timedelta(minutes=11)
-        ),
+        sim._event(employee_id, SignalType.FILE_SHARED_PUBLIC_LINK, at + timedelta(minutes=4)),
+        sim._event(employee_id, SignalType.USB_MASS_STORAGE_MOUNTED, at + timedelta(minutes=11)),
     ]
 
 
@@ -342,9 +336,7 @@ def _account_takeover(sim: Simulator, employee_id: str, at: datetime) -> list[Be
         sim._event(
             employee_id, SignalType.EMAIL_FORWARDING_RULE_CREATED, at + timedelta(minutes=2)
         ),
-        sim._event(
-            employee_id, SignalType.OAUTH_GRANT_RISKY_SCOPE, at + timedelta(minutes=6)
-        ),
+        sim._event(employee_id, SignalType.OAUTH_GRANT_RISKY_SCOPE, at + timedelta(minutes=6)),
     ]
 
 

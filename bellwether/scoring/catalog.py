@@ -159,8 +159,7 @@ CATALOG: dict[SignalType, SignalSpec] = dict(
             RiskCategory.DATA_HANDLING,
             13.0,
             21.0,
-            "Pasted content matching a sensitive-data classifier into a "
-            "third-party AI tool.",
+            "Pasted content matching a sensitive-data classifier into a third-party AI tool.",
         ),
         _spec(
             SignalType.BULK_DOWNLOAD_DETECTED,

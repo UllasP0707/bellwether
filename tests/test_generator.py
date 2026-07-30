@@ -87,9 +87,7 @@ def test_credential_submission_always_follows_a_click() -> None:
     submissions = 0
     for employee_events in by_employee.values():
         clicks = sorted(
-            e.occurred_at
-            for e in employee_events
-            if e.signal is SignalType.PHISH_SIM_CLICKED
+            e.occurred_at for e in employee_events if e.signal is SignalType.PHISH_SIM_CLICKED
         )
         for event in employee_events:
             if event.signal is not SignalType.PHISH_CREDENTIALS_SUBMITTED:
@@ -109,9 +107,7 @@ def test_clicks_always_follow_a_delivery() -> None:
 
     for employee_events in by_employee.values():
         deliveries = sorted(
-            e.occurred_at
-            for e in employee_events
-            if e.signal is SignalType.PHISH_SIM_DELIVERED
+            e.occurred_at for e in employee_events if e.signal is SignalType.PHISH_SIM_DELIVERED
         )
         for event in employee_events:
             if event.signal is SignalType.PHISH_SIM_CLICKED:
@@ -127,8 +123,7 @@ def test_nobody_both_clicks_and_reports_the_same_delivery() -> None:
         chain = sim._phish_chain(member.employee.employee_id, END, member.persona)
         signals = {e.signal for e in chain}
         assert not (
-            SignalType.PHISH_SIM_CLICKED in signals
-            and SignalType.PHISH_SIM_REPORTED in signals
+            SignalType.PHISH_SIM_CLICKED in signals and SignalType.PHISH_SIM_REPORTED in signals
         )
 
 

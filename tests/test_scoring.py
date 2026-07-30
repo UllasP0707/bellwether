@@ -113,9 +113,10 @@ def test_mitigating_signals_reduce_the_score(employee: Employee, now) -> None:
         *clicked,
         make_event(employee.employee_id, SignalType.TRAINING_COMPLETED, now),
     ]
-    assert score_events(employee, with_training, as_of=now).score < score_events(
-        employee, clicked, as_of=now
-    ).score
+    assert (
+        score_events(employee, with_training, as_of=now).score
+        < score_events(employee, clicked, as_of=now).score
+    )
 
 
 def test_score_never_goes_negative(employee: Employee, now) -> None:
