@@ -38,16 +38,24 @@ project; see [DESIGN.md](DESIGN.md).
 
 ```bash
 make install        # venv + dependencies
-make up             # redpanda, postgres, redis, minio
-make topics         # create topics with the right partition counts
-make seed           # generate the employee population into postgres
-make backfill       # 30 days of historical behavior into the lake + topics
-make live           # real-time event trickle (leave running)
-make demo-incident  # inject the scripted phishing chain for employee E0042
+make test           # 49 tests, no infrastructure required
+make seed           # generate the employee population -> data/employees.json
+make backfill       # 30 days of historical behavior -> local lake
+make score          # score one employee and show what drove the number
 ```
 
-Then open the console at http://localhost:8080 (Redpanda) and the dashboard at
-http://localhost:8000.
+Everything above runs with no Docker. To exercise the streaming path:
+
+```bash
+make up             # redpanda, postgres, redis, minio
+make topics         # create topics with the right partition counts
+make backfill-kafka # 30 days of history into the lake and the raw topic
+make demo-incident  # inject the scripted phishing chain for employee E0042
+make consume        # read the raw topic back and verify the round trip
+```
+
+The Redpanda console is at http://localhost:8080 and the MinIO console at
+http://localhost:9001 (`bellwether` / `bellwetherbellwether`).
 
 ## Layout
 
@@ -56,13 +64,12 @@ http://localhost:8000.
 | `bellwether/events/` | Canonical event contracts. The vocabulary everything downstream speaks. |
 | `bellwether/scoring/` | Signal catalog and the shared scoring function (streaming + batch). |
 | `bellwether/generator/` | Synthetic employee population and behavior simulator. |
-| `bellwether/connectors/` | Source-specific ingestion (Okta, Google Workspace, Slack, email gateway). |
-| `bellwether/stream/` | Kafka consumers: normalizer, scorer, intervention engine. |
-| `bellwether/api/` | FastAPI read path serving scores and timelines to the dashboard. |
-| `batch/` | PySpark jobs and dbt models. |
-| `orchestration/` | Airflow DAGs. |
-| `infra/` | Terraform for the AWS deployment. |
-| `docs/` | Design doc, load-test results, runbook. |
+| `docs/` | Design doc, roadmap, load-test results, runbook. |
+
+Planned, in the order they land ([docs/ROADMAP.md](docs/ROADMAP.md)):
+`bellwether/connectors/` (source-specific ingestion) → `bellwether/stream/`
+(normalizer, scorer, intervention engine) → `bellwether/api/` (read path) →
+`batch/` (PySpark and dbt) → `orchestration/` (Airflow) → `infra/` (Terraform).
 
 ## Status
 
