@@ -248,11 +248,16 @@ def consume(
 ) -> None:
     """Read events back off a topic and verify they survive the round trip.
 
-    Checks three things the producer cannot check itself: that the bytes
-    deserialize back into a valid `BehaviorEvent`, that the message key really
-    is the employee id (partitioning by employee is what lets the scorer avoid
-    cross-partition coordination), and that messages are spread across
-    partitions rather than piling onto one.
+    Checks two things the producer cannot check itself: that the bytes
+    deserialize back into a valid `BehaviorEvent`, and that the message key
+    really is the employee id. Keying by employee is what lets the scorer avoid
+    cross-partition coordination, so a silent key regression is expensive.
+
+    Partition distribution is *reported*, not asserted. A consumer that stops at
+    `--limit` will usually have drained one partition rather than sampled all of
+    them, so a single-partition result means the sample was too small, not that
+    the producer is broken. Raise `--limit` past the topic's message count to
+    see the real spread.
 
     Uses a throwaway consumer group so it always reads from the beginning. This
     is a verification tool, not a pipeline stage — resuming from a committed
@@ -342,6 +347,11 @@ def consume(
     console.print(
         f"consumed [green]{len(events)}[/green] across {len(partitions)} partitions ({spread})"
     )
+    if len(partitions) == 1 and len(events) >= limit:
+        console.print(
+            "[dim]sampled a single partition because --limit was reached; "
+            "raise it to see the real spread[/dim]"
+        )
     console.print(
         f"distinct signals: {len(signals)}  "
         f"distinct employees: {len({e.employee_id for e in events})}"
