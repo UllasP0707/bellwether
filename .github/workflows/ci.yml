@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check bellwether tests
+
+      - name: Format check
+        run: ruff format --check bellwether tests
+
+      - name: Type check
+        run: mypy bellwether
+
+      # No services needed: everything under test is pure. The generator, the
+      # scoring function and the lake sink all run without a broker, which is
+      # what keeps this job under a minute.
+      - name: Test
+        run: pytest -q
