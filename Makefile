@@ -2,7 +2,10 @@ VENV := .venv
 PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: help install up down logs topics seed backfill live demo-incident test lint fmt clean
+CLI := $(PY) -m bellwether.generator.cli
+
+.PHONY: help install up down logs topics seed backfill backfill-kafka live \
+        demo-incident score consume test lint fmt clean
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -29,16 +32,25 @@ topics: ## Create Kafka topics
 	./scripts/create_topics.sh
 
 seed: ## Generate the synthetic employee population
-	$(PY) -m bellwether.generator.cli population --size 500
+	$(CLI) population --size 500
 
-backfill: ## Generate 30 days of historical behavior
-	$(PY) -m bellwether.generator.cli backfill --days 30
+backfill: ## Generate 30 days of historical behavior into the local lake
+	$(CLI) backfill --days 30 --to lake
 
-live: ## Stream events in real time until interrupted
-	$(PY) -m bellwether.generator.cli live
+backfill-kafka: ## Generate 30 days of history into the lake and the raw topic
+	$(CLI) backfill --days 30 --to both
+
+live: ## Stream events to Kafka in real time until interrupted
+	$(CLI) live --to kafka
 
 demo-incident: ## Inject the scripted phishing chain used in the demo
-	$(PY) -m bellwether.generator.cli incident --employee E0042 --scenario phish_credential_chain
+	$(CLI) incident --employee E0042 --scenario phish_credential_chain --to both
+
+score: ## Score one employee from the local lake (EMPLOYEE=E0042)
+	$(CLI) score --employee $(or $(EMPLOYEE),E0042)
+
+consume: ## Read the raw topic back and verify the round trip
+	$(CLI) consume --topic bellwether.events.raw
 
 test: ## Run tests
 	$(VENV)/bin/pytest -q

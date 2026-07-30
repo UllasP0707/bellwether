@@ -5,6 +5,7 @@
     python -m bellwether.generator.cli live
     python -m bellwether.generator.cli incident --employee E0042 --scenario phish_credential_chain
     python -m bellwether.generator.cli score --employee E0042
+    python -m bellwether.generator.cli consume --topic bellwether.events.raw
 
 Population size and seed are options on every command rather than persisted
 state, because the population is a pure function of them — two commands with the
@@ -13,6 +14,8 @@ same seed see the same people without needing to agree through a file.
 
 from __future__ import annotations
 
+import time
+import uuid
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +26,7 @@ from rich.console import Console
 from rich.table import Table
 
 from bellwether.config import Topics, settings
-from bellwether.events.schema import SignalType
+from bellwether.events.schema import BehaviorEvent, SignalType
 from bellwether.generator.population import build_population
 from bellwether.generator.simulate import SCENARIOS, Simulator
 from bellwether.generator.sinks import (
@@ -234,6 +237,126 @@ def score(
             f"[{colour}]{factor.contribution:+.2f}[/{colour}]",
         )
     console.print(table)
+
+
+@app.command()
+def consume(
+    topic: Annotated[str, typer.Option(help="Topic to read.")] = Topics.RAW,
+    limit: Annotated[int, typer.Option(help="Messages to read before stopping.")] = 20,
+    timeout: Annotated[float, typer.Option(help="Seconds to wait for messages.")] = 15.0,
+    show: Annotated[int, typer.Option(help="How many messages to print.")] = 10,
+) -> None:
+    """Read events back off a topic and verify they survive the round trip.
+
+    Checks three things the producer cannot check itself: that the bytes
+    deserialize back into a valid `BehaviorEvent`, that the message key really
+    is the employee id (partitioning by employee is what lets the scorer avoid
+    cross-partition coordination), and that messages are spread across
+    partitions rather than piling onto one.
+
+    Uses a throwaway consumer group so it always reads from the beginning. This
+    is a verification tool, not a pipeline stage — resuming from a committed
+    offset would make a second run silently report nothing.
+    """
+    from confluent_kafka import Consumer, KafkaError
+
+    consumer = Consumer(
+        {
+            "bootstrap.servers": settings().kafka_bootstrap,
+            "group.id": f"bellwether-cli-{uuid.uuid4()}",
+            "auto.offset.reset": "earliest",
+            "enable.auto.commit": False,
+        }
+    )
+    consumer.subscribe([topic])
+
+    events: list[BehaviorEvent] = []
+    partitions: Counter[int] = Counter()
+    signals: Counter[str] = Counter()
+    parse_errors = 0
+    key_mismatches = 0
+    deadline = time.monotonic() + timeout
+
+    console.print(f"reading up to {limit} from [bold]{topic}[/bold]...")
+    try:
+        while len(events) < limit and time.monotonic() < deadline:
+            message = consumer.poll(0.5)
+            if message is None:
+                continue
+
+            error = message.error()
+            if error is not None:
+                if error.code() == KafkaError._PARTITION_EOF:
+                    continue
+                console.print(f"[red]{error}[/red]")
+                break
+
+            payload = message.value()
+            partition = message.partition()
+            if payload is None or partition is None:
+                # A tombstone on a non-compacted topic, or a message the client
+                # could not attribute to a partition. Either is a contract
+                # break here, so count it rather than skipping quietly.
+                parse_errors += 1
+                console.print("[red]message with no payload or partition[/red]")
+                continue
+
+            partitions[partition] += 1
+            try:
+                event = BehaviorEvent.model_validate_json(payload)
+            except Exception as err:
+                parse_errors += 1
+                console.print(f"[red]unparseable message: {err}[/red]")
+                continue
+
+            if message.key() != event.employee_id.encode():
+                key_mismatches += 1
+            signals[event.signal.value] += 1
+            events.append(event)
+    finally:
+        consumer.close()
+
+    if not events:
+        console.print(
+            f"[yellow]no messages on {topic}[/yellow]. produce some first: backfill --to kafka"
+        )
+        raise typer.Exit(1)
+
+    table = Table(title=f"first {min(show, len(events))} events", header_style="bold")
+    table.add_column("employee")
+    table.add_column("signal")
+    table.add_column("source")
+    table.add_column("occurred (UTC)")
+    table.add_column("lateness", justify="right")
+    for event in events[:show]:
+        table.add_row(
+            event.employee_id,
+            event.signal.value,
+            event.source.value,
+            f"{event.occurred_at:%Y-%m-%d %H:%M:%S}",
+            f"{event.lateness_seconds:.1f}s",
+        )
+    console.print(table)
+
+    spread = ", ".join(f"p{p}={n}" for p, n in sorted(partitions.items()))
+    console.print(
+        f"consumed [green]{len(events)}[/green] across {len(partitions)} partitions ({spread})"
+    )
+    console.print(
+        f"distinct signals: {len(signals)}  "
+        f"distinct employees: {len({e.employee_id for e in events})}"
+    )
+
+    ok = parse_errors == 0 and key_mismatches == 0
+    if parse_errors:
+        console.print(f"[red]{parse_errors} messages failed to deserialize[/red]")
+    if key_mismatches:
+        console.print(
+            f"[red]{key_mismatches} messages keyed by something other than employee_id[/red]"
+        )
+    console.print("[green]round trip clean[/green]" if ok else "[red]round trip FAILED[/red]")
+    if not ok:
+        raise typer.Exit(1)
 
 
 @app.command()
