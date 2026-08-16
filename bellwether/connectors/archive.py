@@ -53,9 +53,12 @@ class NullArchive:
 
 
 class FileArchive:
-    """Writes payloads under a local directory, mirroring the S3 key layout."""
+    """Writes payloads under a local directory, mirroring the S3 key layout.
 
-    def __init__(self, root: Path | str = "data/raw") -> None:
+    `root` is the bucket equivalent, so keys land at `<root>/raw/source=.../`.
+    """
+
+    def __init__(self, root: Path | str = "data") -> None:
         self.root = Path(root)
         self.written = 0
 
