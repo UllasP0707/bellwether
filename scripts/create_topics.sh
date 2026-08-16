@@ -37,5 +37,10 @@ create bellwether.risk.scores 6 \
 create bellwether.interventions 3 \
   --topic-config retention.ms=2592000000
 
+# Dead letters are kept longer than the data that produced them: you find out
+# you had a parsing bug well after the messages stopped arriving.
+create bellwether.events.dlq 3 \
+  --topic-config retention.ms=7776000000
+
 echo
 $rpk topic list

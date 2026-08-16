@@ -13,6 +13,10 @@ class Topics:
     NORMALIZED = "bellwether.events.normalized"
     SCORES = "bellwether.risk.scores"
     INTERVENTIONS = "bellwether.interventions"
+    # Anything a stage understood well enough to route but not well enough to
+    # trust. Kept out of the main path so one poisoned message cannot stall a
+    # partition, and kept rather than dropped so it can be inspected.
+    DLQ = "bellwether.events.dlq"
 
 
 class Settings(BaseSettings):
