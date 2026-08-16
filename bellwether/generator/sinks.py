@@ -23,6 +23,19 @@ class Sink(Protocol):
     def close(self) -> None: ...
 
 
+class MemorySink:
+    """Collects events in a list. For tests and dry runs."""
+
+    def __init__(self) -> None:
+        self.events: list[BehaviorEvent] = []
+
+    def write(self, event: BehaviorEvent) -> None:
+        self.events.append(event)
+
+    def close(self) -> None:
+        pass
+
+
 class JsonlSink:
     """Writes newline-delimited JSON partitioned by event date.
 

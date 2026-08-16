@@ -29,5 +29,5 @@ warn_unreachable = true
 # The generator's rng-heavy code and the Kafka client's untyped surface aren't
 # worth fighting the checker over.
 [[tool.mypy.overrides]]
-module = ["confluent_kafka.*"]
+module = ["confluent_kafka.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
