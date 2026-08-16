@@ -121,9 +121,6 @@ in production would produce.
 
 ## Event contract — `[built]`
 
-*The contract and its tests exist. The connectors described below do not yet;
-today the generator emits `BehaviorEvent` directly.*
-
 Connectors are the only components that know what an Okta log line looks like.
 They emit `BehaviorEvent` (see [`bellwether/events/schema.py`](bellwether/events/schema.py))
 and everything downstream speaks only that.
@@ -136,8 +133,7 @@ Decisions worth defending:
   Both timestamps travel with the event so either path can choose.
 - **`raw_ref` points into the raw lake.** Normalized events stay small, but
   every one can be traced back to the exact source payload. When a connector's
-  parsing turns out to be wrong, the fix is a reprocess, not a data loss. *(The
-  field is on the contract; nothing populates it until connectors land.)*
+  parsing turns out to be wrong, the fix is a reprocess, not a data loss.
 - **`employee_id` is a tenant-scoped token, never an email.** PII lives in one
   place (the employee dimension) so retention and deletion have one enforcement
   point. See [Handling employee data](#handling-employee-data).
@@ -151,16 +147,28 @@ generating audit spam — can hot-spot a partition.
 
 ## Topics — `[partly built]`
 
-All four are created by [`scripts/create_topics.sh`](scripts/create_topics.sh)
-with the partition counts and retention below, but only `events.raw` currently
-carries traffic. The other three have no producer yet.
+All are created by [`scripts/create_topics.sh`](scripts/create_topics.sh) with
+the partition counts and retention below.
 
-| Topic | Key | Retention | Traffic | Why |
+| Topic | Key | Retention | Producer | Why |
 | --- | --- | --- | --- | --- |
-| `bellwether.events.raw` | source event id | 7d | yes | Replay buffer for connector bugs. |
-| `bellwether.events.normalized` | employee_id | 30d | day 2 | The event-sourced spine. Rebuild any downstream state from here. |
+| `bellwether.events.raw` | source event id | 7d | connectors | Replay buffer for connector bugs. |
+| `bellwether.events.normalized` | employee_id | 30d | normalizer | The event-sourced spine. Rebuild any downstream state from here. |
+| `bellwether.events.dlq` | employee_id | 90d | any stage | What a stage could route but not trust. |
 | `bellwether.risk.scores` | employee_id | compacted | day 3 | Latest score per employee; compaction makes it a queryable snapshot. |
 | `bellwether.interventions` | employee_id | 30d | day 4 | Emitted actions, audited. |
+
+**The two event topics are keyed differently on purpose, and that is the reason
+there are two of them.** Raw is keyed by the vendor's record id: it spreads
+connector output evenly and lets a connector republish a record without knowing
+or caring whose it is. Per-employee stateful scoring needs the opposite —
+everything about one person on one partition — so the normalizer re-keys onto
+`employee_id`. A single topic could not satisfy both.
+
+Partition counts are chosen from the consumer side: 12 partitions on
+`normalized` caps the scorer at 12 parallel instances. Verified on the raw
+topic — a 30-day backfill of 8,606 events spread 1284–1589 across its 6
+partitions, which is what employee-key hashing should give.
 
 Partition counts are chosen from the consumer side: events are keyed by
 employee, so 12 partitions on `normalized` caps the scorer at 12 parallel
@@ -168,12 +176,27 @@ instances. Verified on the raw topic — a 30-day backfill of 8,606 events sprea
 1284–1589 across its 6 partitions, which is what employee-key hashing should
 give.
 
-## Delivery semantics — `[designed]`
+## Delivery semantics — `[partly built]`
 
-*No consumers exist yet. This is the contract they will be written against.*
+*Built through the normalizer. The intervention dedup ledger below is still
+design.*
 
 At-least-once throughout, with idempotent consumers, rather than a
 transactional exactly-once configuration.
+
+Two places enforce it, and both order their writes the same way — do the work,
+then acknowledge the input:
+
+- A **connector** commits its cursor after the page's events are emitted. A
+  crash in between redelivers the page.
+- The **normalizer** flushes its producer before committing consumer offsets.
+  A crash in between redelivers the messages.
+
+Either ordering reversed would silently lose data, which is far worse than
+duplicating it. Redelivery is then absorbed by `event_id`, which connectors
+derive as `uuid5(source, source_event_id)` — the same vendor record always
+produces the same id, however many times it is reprocessed — and suppressed at
+the normalizer against a shared Redis set.
 
 Justification: the two things duplicates could corrupt are scores and
 interventions. Scores will be recomputed from a windowed event set keyed by
@@ -182,6 +205,14 @@ built this way and its order-independence is tested. Interventions will be
 deduplicated on `(employee_id, intervention_type, cooldown_window)` in Postgres
 before send. Exactly-once machinery would add coordination cost to buy a
 property the consumer design provides on its own.
+
+**A consumer must also survive input it cannot parse.** One poisoned message
+that raises will crash-loop its partition and block every well-formed event
+behind it, which turns a single bad record into an outage. So the normalizer
+routes rather than raises: garbage and invalid-at-a-known-version go to the
+dead-letter topic; an unrecognised *future* `schema_version` is forwarded
+unvalidated, because the routing fields are stable by contract and a newer
+consumer downstream may understand what this one doesn't.
 
 ## Interventions must not spam a human — `[designed]`
 

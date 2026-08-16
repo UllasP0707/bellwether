@@ -29,12 +29,30 @@ The demo narrative also runs end to end: E0042 scores 35.94 (moderate, driven by
 data handling), the scripted phishing chain lands, and they move to 78.68 (high,
 driven by phishing susceptibility).
 
-## Day 2 — ingestion
+## Day 2 — ingestion ✅
 
-- [ ] Connector base class: cursor persistence, rate-limit backoff, pagination
-- [ ] Four connectors reading the generator as if it were a vendor API
-- [ ] Raw payloads to MinIO with `raw_ref` written back onto the event
-- [ ] Normalizer consumer: `events.raw` → `events.normalized`, schema-version tolerant
+- [x] Mock vendor API: four endpoints, four pagination idioms, four timestamp
+      formats, injectable 429s and 5xx
+- [x] Connector base class: cursor persistence, rate-limit backoff, pagination,
+      identity resolution, deterministic event ids, per-reason drop counters
+- [x] Four connectors — Okta, Google Workspace, MailShield, Sentry Agent
+- [x] Raw payload archival with `raw_ref` written back onto the event
+- [x] Normalizer: re-key onto `employee_id`, deduplicate, tolerate unknown
+      schema versions, dead-letter what it cannot parse
+- [x] 58 new tests (107 total), CI green
+
+Verified against a live HTTP vendor: 8,288 events across four connectors, zero
+dropped, zero malformed, every event carrying a `raw_ref` that resolves back to
+the original payload. Rate limiting exercised for real — 6 × 429, 6 retries,
+6.0s of `Retry-After` backoff, source still drained cleanly.
+
+The PII boundary is visible end to end: the archived payload names
+`zara.moreau@acme.example`, the event it produced carries only `E0459`.
+
+**Not yet verified against a broker.** `S3Archive` and the normalizer's Kafka
+runner are written and unit-tested but have only run against the file archive
+and in-process handlers, because the local Docker engine is currently wedged.
+Both need a pass against MinIO and Redpanda before day 3 depends on them.
 
 ## Day 3 — real-time scoring
 
