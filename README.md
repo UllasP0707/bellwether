@@ -75,9 +75,22 @@ Planned, in the order they land ([docs/ROADMAP.md](docs/ROADMAP.md)):
 
 ## Status
 
-Built and running: event contracts, signal catalog, employee population,
-behavior simulator.
+Day 1 of 11. [DESIGN.md](DESIGN.md) marks every section `[built]`,
+`[partly built]` or `[designed]` so it is clear which parts of the design are
+running and which are still argument.
 
-Not yet built: connectors, normalizer, stream scorer, feature store,
-intervention engine, read API, Spark rollups, dbt marts, Airflow DAGs,
-Terraform, load test. Tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
+**Built and running.** Event contracts with an event-time/ingest-time split; a
+23-signal catalog with weights and decay half-lives; the shared scoring function
+with per-signal attribution; a synthetic population of six behavioral personas
+and the behavior simulator that drives them; lake and Kafka sinks; the CLI. 49
+tests, `ruff`, `ruff format` and `mypy --strict` enforced in CI. The local stack
+is verified end to end against a real broker.
+
+**Not yet built.** Connectors, normalizer, stream scorer, feature store,
+intervention engine, read API, Spark rollups and the stream/batch parity test,
+dbt marts, Airflow DAGs, observability, load test, Terraform. Ordered in
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
+The parity test is the one that matters most: the argument for structuring the
+project around a single signal catalog is only proven once two execution paths
+run against it and agree.

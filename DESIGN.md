@@ -1,5 +1,18 @@
 # Bellwether: design
 
+> **How to read this.** Bellwether is being built in stages, and this document
+> describes the whole design rather than only what exists today. Every section
+> carries a status:
+>
+> - **`[built]`** — implemented, tested, running. Claims here are things you can
+>   verify by cloning the repo.
+> - **`[partly built]`** — some of it exists; the section says which part.
+> - **`[designed]`** — decided and specified here, not yet written.
+>   [docs/ROADMAP.md](docs/ROADMAP.md) says which day it lands.
+>
+> Nothing marked `[built]` depends on anything marked `[designed]`. Measurements
+> quoted in this document come from code that exists.
+
 ## Problem
 
 An enterprise wants to know which of its employees are currently risky, why,
@@ -18,16 +31,25 @@ That splits into two workloads with incompatible shapes:
 The naive solution builds these twice. That is the failure mode this project is
 organized to avoid.
 
-## Core constraint: one signal catalog
+## Core constraint: one signal catalog — `[partly built]`
+
+*Built: the catalog and the shared scoring function. Not yet built: the two
+execution paths that are supposed to prove the point.*
 
 Every behavior Bellwether understands is declared once, in
 [`bellwether/scoring/catalog.py`](bellwether/scoring/catalog.py), as a `SignalSpec`:
 weight, direction, half-life, risk category.
 
-The streaming scorer and the Spark batch scorer are two evaluation strategies
-over the same catalog and the same pure `score_events()` function. A weight
-change is one edit that both paths pick up, and `tests/test_score_parity.py`
-replays a fixed event log through both and asserts the scores agree.
+The streaming scorer and the Spark batch scorer are intended as two evaluation
+strategies over the same catalog and the same pure `score_events()` function, so
+that a weight change is one edit both paths pick up. A `test_score_parity` case
+will replay a fixed event log through both and assert the scores agree.
+
+**Neither path exists yet** — today there is one caller, the `score` CLI command.
+Until the batch path and that parity test land (day 6), this section is an
+argument for a design, not a description of a working guarantee. It is the
+single most important thing left to prove, because it is the reason the project
+is structured the way it is.
 
 This is the standard train/serve skew problem wearing a different hat, and the
 answer is the same: the definition must live in one place that both paths
@@ -39,7 +61,7 @@ lookups, no incremental state the batch path can't reconstruct. Scoring is
 therefore a pure function of `(employee dimension, event window)`. Anything
 needing richer state has to earn its way in.
 
-## Frequency beats severity in a decayed sum, and that is a trap
+## Frequency beats severity in a decayed sum, and that is a trap — `[built]`
 
 The first version of the catalog priced "shared a file with an external address"
 at weight 2.0 — plausible in isolation. It arrives about 0.4 times per employee
@@ -69,7 +91,7 @@ Two consequences:
 After rebalancing: median 19.9, p90 71.0, 4.6% of the population in the critical
 band. The distribution now has a tail to act on.
 
-## Does it work?
+## Does it work? — `[built]`
 
 The generator assigns each employee a hidden persona — `vigilant`, `typical`,
 `onboarding`, `hurried`, `targeted`, `shadow_it` — that drives their behavior.
@@ -88,8 +110,8 @@ Mean score by persona, 500 employees over 30 days:
 
 The ranking is recovered exactly, from behavior alone, with clear separation
 between adjacent groups. That is the closest thing to a ground-truth check
-available without real labeled incident data, and it is what the parity test and
-the load test are measured against.
+available without real labeled incident data, and it is the fixture the parity
+test and the load test will be measured against once they exist.
 
 The honest caveat: the generator and the scorer were written by the same person
 against the same mental model, so this validates internal consistency, not that
@@ -97,7 +119,10 @@ the weights match reality. Real validation needs outcome labels — which employ
 actually got compromised — and that is exactly the data this system's first year
 in production would produce.
 
-## Event contract
+## Event contract — `[built]`
+
+*The contract and its tests exist. The connectors described below do not yet;
+today the generator emits `BehaviorEvent` directly.*
 
 Connectors are the only components that know what an Okta log line looks like.
 They emit `BehaviorEvent` (see [`bellwether/events/schema.py`](bellwether/events/schema.py))
@@ -111,7 +136,8 @@ Decisions worth defending:
   Both timestamps travel with the event so either path can choose.
 - **`raw_ref` points into the raw lake.** Normalized events stay small, but
   every one can be traced back to the exact source payload. When a connector's
-  parsing turns out to be wrong, the fix is a reprocess, not a data loss.
+  parsing turns out to be wrong, the fix is a reprocess, not a data loss. *(The
+  field is on the contract; nothing populates it until connectors land.)*
 - **`employee_id` is a tenant-scoped token, never an email.** PII lives in one
   place (the employee dimension) so retention and deletion have one enforcement
   point. See [Handling employee data](#handling-employee-data).
@@ -123,28 +149,43 @@ partition and the per-employee scorer needs no cross-partition coordination.
 The tradeoff is that a single pathological employee — an admin account
 generating audit spam — can hot-spot a partition.
 
-## Topics
+## Topics — `[partly built]`
 
-| Topic | Key | Retention | Why |
-| --- | --- | --- | --- |
-| `bellwether.events.raw` | source event id | 7d | Replay buffer for connector bugs. |
-| `bellwether.events.normalized` | employee_id | 30d | The event-sourced spine. Rebuild any downstream state from here. |
-| `bellwether.risk.scores` | employee_id | compacted | Latest score per employee; compaction makes it a queryable snapshot. |
-| `bellwether.interventions` | employee_id | 30d | Emitted actions, audited. |
+All four are created by [`scripts/create_topics.sh`](scripts/create_topics.sh)
+with the partition counts and retention below, but only `events.raw` currently
+carries traffic. The other three have no producer yet.
 
-## Delivery semantics
+| Topic | Key | Retention | Traffic | Why |
+| --- | --- | --- | --- | --- |
+| `bellwether.events.raw` | source event id | 7d | yes | Replay buffer for connector bugs. |
+| `bellwether.events.normalized` | employee_id | 30d | day 2 | The event-sourced spine. Rebuild any downstream state from here. |
+| `bellwether.risk.scores` | employee_id | compacted | day 3 | Latest score per employee; compaction makes it a queryable snapshot. |
+| `bellwether.interventions` | employee_id | 30d | day 4 | Emitted actions, audited. |
+
+Partition counts are chosen from the consumer side: events are keyed by
+employee, so 12 partitions on `normalized` caps the scorer at 12 parallel
+instances. Verified on the raw topic — a 30-day backfill of 8,606 events spread
+1284–1589 across its 6 partitions, which is what employee-key hashing should
+give.
+
+## Delivery semantics — `[designed]`
+
+*No consumers exist yet. This is the contract they will be written against.*
 
 At-least-once throughout, with idempotent consumers, rather than a
 transactional exactly-once configuration.
 
 Justification: the two things duplicates could corrupt are scores and
-interventions. Scores are recomputed from a windowed event set keyed by
-`event_id`, so replaying a duplicate is a no-op. Interventions are deduplicated
-on `(employee_id, intervention_type, cooldown_window)` in Postgres before send.
-Exactly-once machinery would add coordination cost to buy a property the
-consumer design already provides.
+interventions. Scores will be recomputed from a windowed event set keyed by
+`event_id`, so replaying a duplicate is a no-op — `score_events()` is already
+built this way and its order-independence is tested. Interventions will be
+deduplicated on `(employee_id, intervention_type, cooldown_window)` in Postgres
+before send. Exactly-once machinery would add coordination cost to buy a
+property the consumer design provides on its own.
 
-## Interventions must not spam a human
+## Interventions must not spam a human — `[designed]`
+
+*Nothing in the repo sends anything to anyone yet. Landing day 4.*
 
 The part of this system with real-world consequences is the one that messages
 employees. Three gates before anything sends:
@@ -156,25 +197,29 @@ employees. Three gates before anything sends:
    climbs only on repeat behavior, and manager notification requires a policy
    flag, because escalating to someone's boss is not a reversible action.
 
-Copy is generated by Claude from the employee's actual signals, then validated
-against a guardrail check (no accusatory framing, no PII beyond first name,
-length bounded, must contain the concrete action to take). Generation failure
-falls back to a static template — the system degrades to boring, never to
-silent.
+Copy will be generated by an LLM from the employee's actual signals, then
+validated against a guardrail check (no accusatory framing, no PII beyond first
+name, length bounded, must contain the concrete action to take). Generation
+failure falls back to a static template — the system should degrade to boring,
+never to silent.
 
-## Handling employee data
+## Handling employee data — `[partly built]`
 
 This is behavioral data about identifiable people, which is the most sensitive
 category the system could hold.
 
-- PII (email, name, manager) lives only in the `employees` table. Events carry
-  the token.
-- Retention: raw payloads 30d, normalized events 400d, aggregates indefinitely.
-  Enforced by a scheduled job, not by convention.
-- Deletion: one function resolves a token, purges the dimension row, and
-  tombstones the compacted score topic.
-- The read API is tenant-scoped at the query layer, and every score read is
-  written to an audit log — who looked at whose risk score is itself sensitive.
+- **Built.** PII (email, name, manager) exists only on the `Employee`
+  dimension; events carry the token. A test asserts `BehaviorEvent` has no PII
+  fields, because the tempting mistake is denormalizing an email onto the event
+  for a nicer dashboard — which silently moves PII into a topic with different
+  retention than the table it was supposed to live in.
+- **Designed.** Retention: raw payloads 30d, normalized events 400d, aggregates
+  indefinitely, enforced by a scheduled job rather than by convention (day 10).
+- **Designed.** Deletion: one function resolves a token, purges the dimension
+  row, and tombstones the compacted score topic (day 10).
+- **Designed.** The read API is tenant-scoped at the query layer and every score
+  read is written to an audit log — who looked at whose risk score is itself
+  sensitive (day 5).
 
 ## What I would do differently at real scale
 
@@ -183,7 +228,8 @@ Honest list, since these are the questions an interviewer should ask.
 - **Python stream consumers won't hold.** Fine at thousands of events/sec on one
   partition set; at a hundred thousand I would move the scorer to Flink for real
   windowing, checkpointed state, and event-time watermarks instead of the
-  hand-rolled window this uses.
+  hand-rolled window this design calls for. The load test on day 9 is what will
+  tell me where the actual ceiling is, rather than my guess at it.
 - **Postgres is doing three jobs** (dimension, dedup ledger, serving). At scale
   those separate: dimension stays relational, dedup moves to Redis with TTLs,
   serving moves behind a read replica or a purpose-built store.
@@ -197,9 +243,15 @@ Honest list, since these are the questions an interviewer should ask.
 
 ## Open questions
 
-- Windowed scoring currently recomputes over a 30-day lookback on every event.
-  Correct and simple, but O(events in window) per event. Incremental decay
-  update is the obvious fix; it complicates batch parity.
-- No backpressure story yet between connectors and the raw topic.
-- Score parity between stream and batch is asserted on a fixed fixture. It
-  should be a continuous production check.
+- Windowed scoring recomputes over a 30-day lookback on every call. Correct and
+  simple, but O(events in window) per event, which will matter once a stream
+  consumer is calling it per message rather than a CLI calling it once.
+  Incremental decay update is the obvious fix, and it complicates batch parity —
+  which is exactly the tension the parity test exists to hold.
+- No backpressure story between connectors and the raw topic.
+- Parity will be asserted on a fixed fixture. That catches regressions but not
+  drift in production; it should eventually be a continuous check comparing the
+  two paths on live data.
+- The high-value-target multiplier (1.4x) and the saturation constant (30) are
+  judgment calls with no empirical basis. They are the two numbers I would most
+  want real outcome data to correct.
