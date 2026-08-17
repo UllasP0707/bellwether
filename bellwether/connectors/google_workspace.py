@@ -39,7 +39,7 @@ class GoogleWorkspaceConnector(Connector):
         body = self.client.get(
             f"/admin/reports/v1/activity/users/all/applications/{self.stream}", params
         ).json()
-        return Page(records=body.get("items", []), next_cursor=body.get("nextPageToken"))
+        return Page(records=body.get("items", []), cursor=body.get("nextPageToken"))
 
     def parse(self, record: dict[str, Any]) -> ParsedRecord | None:
         events = record.get("events") or []

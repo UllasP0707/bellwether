@@ -27,12 +27,10 @@ class EndpointAgentConnector(Connector):
         offset = int(cursor) if cursor else 0
         body = self.client.get("/api/telemetry", {"offset": offset, "limit": limit}).json()
 
-        # Offset pagination has no natural terminator, so it is derived: stop
-        # when the server's next offset stops advancing, rather than trusting
-        # `total`, which can move under a live feed and loop forever.
-        next_offset = int(body.get("offset", offset))
-        next_cursor = str(next_offset) if next_offset > offset else None
-        return Page(records=body.get("records", []), next_cursor=next_cursor)
+        # The server echoes the offset it reached, which is exactly the resume
+        # position. `total` is deliberately unused: it moves under a live feed,
+        # so comparing against it would either loop or stop early.
+        return Page(records=body.get("records", []), cursor=str(int(body.get("offset", offset))))
 
     def parse(self, record: dict[str, Any]) -> ParsedRecord | None:
         signal = SIGNAL_BY_TELEMETRY_TYPE.get(record.get("telemetry_type", ""))

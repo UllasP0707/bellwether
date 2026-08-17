@@ -135,7 +135,8 @@ def test_connector_drains_every_page(
 
     assert result.pages > 1, "test data should span multiple pages"
     assert result.emitted > 0
-    assert result.cursor is None, "a drained connector must end with no cursor"
+    assert result.drained, "the source should have been exhausted"
+    assert result.cursor is not None, "a drained connector must still know where it got to"
     assert len(sink.events) == result.emitted
     assert all(e.source is CONNECTORS[name].source for e in sink.events)
 
@@ -149,7 +150,8 @@ def test_connector_resumes_from_its_cursor(
 
     first, sink_a = build_connector(name, vendor, directory, cursors=cursors)
     partial = first.run(max_pages=1, limit=25)
-    assert partial.cursor is not None, "one page should not have drained the source"
+    assert not partial.drained, "one page should not have drained the source"
+    assert partial.cursor is not None
 
     second, sink_b = build_connector(name, vendor, directory, cursors=cursors)
     rest = second.run(limit=25)
@@ -200,7 +202,7 @@ def test_rate_limiting_is_survived(vendor: TestClient, directory: EmployeeDirect
     connector, _ = build_connector("email_gateway", vendor, directory)
     result = connector.run(limit=5)
 
-    assert result.cursor is None
+    assert result.drained
     assert result.emitted == expected, "retrying lost or duplicated records"
     assert connector.client.stats.rate_limited > 0, "the 429 path was never exercised"
     assert connector.client.stats.retries > 0
@@ -215,7 +217,7 @@ def test_transient_server_errors_are_survived(
     result = connector.run(limit=5)
 
     assert result.emitted > 0
-    assert result.cursor is None
+    assert result.drained
     assert connector.client.stats.server_errors > 0, "the 503 path was never exercised"
 
 
@@ -397,3 +399,42 @@ def test_signals_reaching_the_pipeline_cover_the_catalog(
     unreachable = {s for s, src in SIGNAL_SOURCE.items() if src in UNCONNECTED_SOURCES}
     assert delivered & unreachable == set()
     assert len(delivered) >= 15, f"only {len(delivered)} signals reach the pipeline"
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_a_drained_connector_does_not_re_ingest_on_the_next_run(
+    name: str, vendor: TestClient, directory: EmployeeDirectory
+) -> None:
+    """The bug this guards against: a drained connector that persists "no next
+    page" as its resume point restarts from the beginning of the vendor's
+    history every cycle. Downstream survives it, because dedup absorbs the
+    replay, so the only symptom is the connector quietly re-polling everything
+    forever and burning the rate limit doing it.
+    """
+    cursors = InMemoryCursorStore()
+
+    first, _ = build_connector(name, vendor, directory, cursors=cursors)
+    initial = first.run(limit=50)
+    assert initial.emitted > 0
+    assert initial.drained
+
+    second, sink = build_connector(name, vendor, directory, cursors=cursors)
+    again = second.run(limit=50)
+
+    assert again.fetched == 0, f"re-fetched {again.fetched} records it already had"
+    assert again.emitted == 0
+    assert sink.events == []
+    assert again.drained
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_resume_picks_up_records_that_arrive_later(
+    name: str, vendor: TestClient, directory: EmployeeDirectory
+) -> None:
+    """Draining must not mean the cursor stops being usable."""
+    cursors = InMemoryCursorStore()
+    first, _ = build_connector(name, vendor, directory, cursors=cursors)
+    first.run(limit=50)
+
+    stored = cursors.get(name, CONNECTORS[name].stream)
+    assert stored is not None, "position was forgotten once the source ran dry"

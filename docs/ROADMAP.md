@@ -49,10 +49,27 @@ the original payload. Rate limiting exercised for real — 6 × 429, 6 retries,
 The PII boundary is visible end to end: the archived payload names
 `zara.moreau@acme.example`, the event it produced carries only `E0459`.
 
-**Not yet verified against a broker.** `S3Archive` and the normalizer's Kafka
-runner are written and unit-tested but have only run against the file archive
-and in-process handlers, because the local Docker engine is currently wedged.
-Both need a pass against MinIO and Redpanda before day 3 depends on them.
+Then verified against the real stack — MinIO, Postgres, Redpanda and Redis:
+
+| Check | Result |
+| --- | --- |
+| Raw payloads in MinIO | 8,288 objects under `raw/source=*/dt=*/` |
+| `events.raw` | 8,288 across 6 partitions (1113–1649) |
+| `events.normalized` | 8,288 across 12 partitions (541–959) |
+| Dead letters | 0 |
+| Employees split across partitions | 0 of 314 |
+| Full replay through a fresh consumer group | 8,288 duplicates, 0 emitted, topic unchanged |
+| Second connector run | 0 records re-fetched |
+
+The replay is the one worth pointing at: re-reading the entire raw topic
+produced no new normalized events and no growth, which is what makes
+at-least-once delivery safe rather than merely tolerated.
+
+**A real bug turned up during that verification** — see `Persist a resume
+position when a connector drains`. A drained connector was storing "no next
+page" as its cursor, so every subsequent poll re-ingested the vendor's whole
+history. Downstream never noticed, because dedup absorbed it, which is exactly
+what made it worth catching: the only symptom was wasted vendor quota.
 
 ## Day 3 — real-time scoring
 

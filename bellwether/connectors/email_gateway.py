@@ -43,10 +43,10 @@ class EmailGatewayConnector(Connector):
         if cursor:
             params["cursor"] = cursor
         body = self.client.get("/v2/events", params).json()
-        # Trust has_more over the presence of next_cursor: the two disagreeing
-        # is a vendor bug, and treating a null cursor as "keep going" would loop.
-        next_cursor = body.get("next_cursor") if body.get("has_more") else None
-        return Page(records=body.get("data", []), next_cursor=next_cursor)
+        # has_more is deliberately ignored for paging. next_cursor is where to
+        # resume, and it stays meaningful once has_more goes false; the empty
+        # page that follows is what ends the run.
+        return Page(records=body.get("data", []), cursor=body.get("next_cursor"))
 
     def parse(self, record: dict[str, Any]) -> ParsedRecord | None:
         signal = SIGNAL_BY_ACTION.get(record.get("action", ""))

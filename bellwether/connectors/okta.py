@@ -38,11 +38,11 @@ class OktaConnector(Connector):
             params["after"] = cursor
         response = self.client.get("/api/v1/logs", params)
 
-        # Okta signals "more available" only by sending a Link header. Its
-        # absence is the terminator; an empty body is not, since a page can be
-        # empty after server-side filtering while more pages remain.
+        # Okta always advertises a next link, including at the end of the
+        # stream, so this is a resume position rather than a "more available"
+        # flag. An empty page is the terminator.
         match = _NEXT_AFTER.search(response.headers.get("Link", ""))
-        return Page(records=response.json(), next_cursor=match.group(1) if match else None)
+        return Page(records=response.json(), cursor=match.group(1) if match else None)
 
     def parse(self, record: dict[str, Any]) -> ParsedRecord | None:
         signal = SIGNAL_BY_EVENT_TYPE.get(record["eventType"])

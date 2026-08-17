@@ -41,10 +41,19 @@ def deterministic_event_id(source: Source, source_event_id: str) -> str:
 
 @dataclass(frozen=True)
 class Page:
-    """One page of vendor records, plus how to ask for the next one."""
+    """One page of vendor records, plus where to resume.
+
+    `cursor` is a position, not a "there is more" flag. Polling log APIs hand
+    back a cursor that stays valid past the end of the stream precisely so a
+    poller can hold it and come back for whatever arrives later; exhaustion is
+    signalled by an empty page.
+
+    Conflating the two is how a connector ends up storing "no next page" as its
+    resume point and re-ingesting the vendor's entire history on every cycle.
+    """
 
     records: list[dict[str, Any]]
-    next_cursor: str | None
+    cursor: str | None
 
 
 @dataclass(frozen=True)
@@ -74,6 +83,7 @@ class PollResult:
     unresolved_identity: int = 0
     malformed: int = 0
     cursor: str | None = None
+    drained: bool = False
 
     @property
     def skipped(self) -> int:
@@ -143,14 +153,22 @@ class Connector(ABC):
     # --- the run loop -----------------------------------------------------
 
     def run(self, max_pages: int = 100, limit: int = 100) -> PollResult:
-        """Poll until the vendor runs out of records or `max_pages` is reached.
+        """Poll until the vendor stops returning records or `max_pages` is hit.
 
-        The cursor is written **after** the page's events are emitted. That
-        ordering is what makes the pipeline at-least-once: a crash between
-        emitting and committing re-delivers the page on restart, and because
-        `event_id` is derived from the vendor's own record id, the duplicates
-        are identical and harmless. The other ordering would silently lose data,
-        which is much worse than duplicating it.
+        Two orderings matter here.
+
+        The cursor is written **after** the page's events are emitted. That is
+        what makes the pipeline at-least-once: a crash in between redelivers the
+        page on restart, and because `event_id` is derived from the vendor's own
+        record id, the duplicates are identical and harmless. The other ordering
+        would silently lose data, which is much worse.
+
+        The loop terminates on an **empty page**, not on a missing cursor, and it
+        persists the position it reached even when the source is exhausted. A
+        drained connector that stored "no next page" as its resume point would
+        restart from the beginning of the vendor's history on the next cycle —
+        harmless downstream, since dedup absorbs it, but it would re-poll
+        everything forever and burn the rate limit doing it.
         """
         result = PollResult(connector=self.name)
         cursor = self.cursors.get(self.name, self.stream)
@@ -167,11 +185,16 @@ class Connector(ABC):
                     self.sink.write(event)
                     result.emitted += 1
 
-            cursor = page.next_cursor
+            cursor = page.cursor
             self.cursors.set(self.name, self.stream, cursor)
             result.cursor = cursor
 
+            if not page.records:
+                result.drained = True
+                break
             if cursor is None:
+                # A vendor that offers no way to resume; nothing more to do.
+                result.drained = True
                 break
 
         return result

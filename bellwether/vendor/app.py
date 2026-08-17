@@ -143,12 +143,14 @@ def create_app(store: VendorStore | None = None, config: VendorConfig | None = N
     ) -> list[dict[str, Any]]:
         state.guard("okta")
         offset = _decode_cursor(after)
-        window, next_offset, has_more = state.store.slice(Source.OKTA, offset, limit)
-        if has_more:
-            nxt = _encode_cursor(next_offset)
-            response.headers["Link"] = (
-                f'<https://vendor.local/api/v1/logs?after={nxt}&limit={limit}>; rel="next"'
-            )
+        window, next_offset, _ = state.store.slice(Source.OKTA, offset, limit)
+        # Okta always advertises a next link, even at the end of the stream, so
+        # a poller can hold the cursor and come back for what arrives later.
+        # Exhaustion is signalled by an empty page, not by a missing link.
+        nxt = _encode_cursor(next_offset)
+        response.headers["Link"] = (
+            f'<https://vendor.local/api/v1/logs?after={nxt}&limit={limit}>; rel="next"'
+        )
         return window
 
     # --- Google Workspace: pageToken in, nextPageToken out ---------------
@@ -160,15 +162,14 @@ def create_app(store: VendorStore | None = None, config: VendorConfig | None = N
     ) -> dict[str, Any]:
         state.guard("google")
         offset = _decode_cursor(pageToken)
-        window, next_offset, has_more = state.store.slice(
-            Source.GOOGLE_WORKSPACE, offset, maxResults
-        )
+        window, next_offset, _ = state.store.slice(Source.GOOGLE_WORKSPACE, offset, maxResults)
         if application != "all":
             window = [r for r in window if r["id"]["applicationName"] == application]
-        body: dict[str, Any] = {"kind": "admin#reports#activities", "items": window}
-        if has_more:
-            body["nextPageToken"] = _encode_cursor(next_offset)
-        return body
+        return {
+            "kind": "admin#reports#activities",
+            "items": window,
+            "nextPageToken": _encode_cursor(next_offset),
+        }
 
     # --- MailShield: cursor / next_cursor / has_more ---------------------
     @app.get("/v2/events")
@@ -181,7 +182,7 @@ def create_app(store: VendorStore | None = None, config: VendorConfig | None = N
         window, next_offset, has_more = state.store.slice(Source.EMAIL_GATEWAY, offset, limit)
         return {
             "data": window,
-            "next_cursor": _encode_cursor(next_offset) if has_more else None,
+            "next_cursor": _encode_cursor(next_offset),
             "has_more": has_more,
         }
 
