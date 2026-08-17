@@ -33,8 +33,8 @@ organized to avoid.
 
 ## Core constraint: one signal catalog — `[partly built]`
 
-*Built: the catalog and the shared scoring function. Not yet built: the two
-execution paths that are supposed to prove the point.*
+*Built: the catalog, the shared scoring function, and the streaming path that
+calls it. Not yet built: the batch path, and therefore the parity test.*
 
 Every behavior Bellwether understands is declared once, in
 [`bellwether/scoring/catalog.py`](bellwether/scoring/catalog.py), as a `SignalSpec`:
@@ -45,11 +45,23 @@ strategies over the same catalog and the same pure `score_events()` function, so
 that a weight change is one edit both paths pick up. A `test_score_parity` case
 will replay a fixed event log through both and assert the scores agree.
 
-**Neither path exists yet** — today there is one caller, the `score` CLI command.
-Until the batch path and that parity test land (day 6), this section is an
-argument for a design, not a description of a working guarantee. It is the
-single most important thing left to prove, because it is the reason the project
-is structured the way it is.
+**The streaming path exists; the batch path does not.** Until it and the parity
+test land (day 6), this section is an argument for a design rather than a
+description of a working guarantee. It remains the most important thing left to
+prove, because it is the reason the project is structured the way it is.
+
+What makes it reachable is that scoring reads a *structural* type rather than a
+concrete one. `ScorableEvent` is three fields — `employee_id`, `signal`,
+`occurred_at` — so the stream consumer's parsed models, the Redis window's
+compact projection, and Spark's `Row` objects all satisfy it without conversion.
+Had `score_events` kept its original `Iterable[BehaviorEvent]` signature, the
+batch path would have had to materialise millions of Pydantic models per run,
+and the obvious remedy would have been a second implementation in Spark — which
+is precisely the outcome this design is meant to prevent.
+
+One early signal that it holds: the streaming path scores the population into
+23 critical / 41 high / 79 elevated / 109 moderate / 247 low, and the day-1
+offline computation over the lake put 4.6% critical. Same answer, two callers.
 
 This is the standard train/serve skew problem wearing a different hat, and the
 answer is the same: the definition must live in one place that both paths
@@ -155,7 +167,7 @@ the partition counts and retention below.
 | `bellwether.events.raw` | source event id | 7d | connectors | Replay buffer for connector bugs. |
 | `bellwether.events.normalized` | employee_id | 30d | normalizer | The event-sourced spine. Rebuild any downstream state from here. |
 | `bellwether.events.dlq` | employee_id | 90d | any stage | What a stage could route but not trust. |
-| `bellwether.risk.scores` | employee_id | compacted | day 3 | Latest score per employee; compaction makes it a queryable snapshot. |
+| `bellwether.risk.scores` | employee_id | compacted | scorer | Latest score per employee; compaction makes it a queryable snapshot. |
 | `bellwether.interventions` | employee_id | 30d | day 4 | Emitted actions, audited. |
 
 **The two event topics are keyed differently on purpose, and that is the reason
@@ -176,10 +188,10 @@ instances. Verified on the raw topic — a 30-day backfill of 8,606 events sprea
 1284–1589 across its 6 partitions, which is what employee-key hashing should
 give.
 
-## Delivery semantics — `[partly built]`
+## Delivery semantics — `[built]`
 
-*Built through the normalizer. The intervention dedup ledger below is still
-design.*
+*The intervention dedup ledger under [Interventions](#interventions-must-not-spam-a-human)
+is still design; everything else here is running.*
 
 At-least-once throughout, with idempotent consumers, rather than a
 transactional exactly-once configuration.
@@ -189,14 +201,21 @@ then acknowledge the input:
 
 - A **connector** commits its cursor after the page's events are emitted. A
   crash in between redelivers the page.
-- The **normalizer** flushes its producer before committing consumer offsets.
-  A crash in between redelivers the messages.
+- The **normalizer** and the **scorer** flush their producers before committing
+  consumer offsets. A crash in between redelivers the messages.
 
 Either ordering reversed would silently lose data, which is far worse than
 duplicating it. Redelivery is then absorbed by `event_id`, which connectors
 derive as `uuid5(source, source_event_id)` — the same vendor record always
-produces the same id, however many times it is reprocessed — and suppressed at
-the normalizer against a shared Redis set.
+produces the same id, however many times it is reprocessed. The normalizer
+suppresses repeats against a shared Redis set, and the scorer is inert to them
+for a different reason: its window is a sorted set keyed by `event_id`, so
+re-adding an event it already holds changes nothing.
+
+Measured rather than assumed. Adding a second scorer to a running consumer group
+redelivered 430 uncommitted messages out of 7,789, and every published score was
+byte-identical afterwards. At-least-once is only a safe choice if reprocessing is
+demonstrably inert.
 
 Justification: the two things duplicates could corrupt are scores and
 interventions. Scores will be recomputed from a windowed event set keyed by
@@ -244,6 +263,15 @@ category the system could hold.
   fields, because the tempting mistake is denormalizing an email onto the event
   for a nicer dashboard — which silently moves PII into a topic with different
   retention than the table it was supposed to live in.
+- **Built.** An address that matches more than one employee resolves to nobody.
+  Vendors identify people by email and the dimension is the only thing that can
+  turn that into a token, so a duplicate address means the platform cannot say
+  whose behaviour it is looking at. Guessing would attribute one employee's
+  phishing click to a colleague and produce a score that looks entirely
+  plausible — the worst available failure for a product whose whole output is
+  *which person*. This was a real bug, not a hypothetical: the synthetic
+  population issued colliding addresses and silently merged 185 people into
+  others' scores before anything noticed.
 - **Designed.** Retention: raw payloads 30d, normalized events 400d, aggregates
   indefinitely, enforced by a scheduled job rather than by convention (day 10).
 - **Designed.** Deletion: one function resolves a token, purges the dimension

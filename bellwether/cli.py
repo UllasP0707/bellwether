@@ -8,6 +8,8 @@ python -m bellwether.cli generate --help        # the synthetic data tools
 
 from __future__ import annotations
 
+import time
+from collections import Counter
 from pathlib import Path
 from typing import Annotated
 
@@ -46,6 +48,32 @@ def vendor(
     uvicorn.run(create_app(store=store), host="127.0.0.1", port=port, log_level="warning")
 
 
+@app.command("load-dimension")
+def load_dimension(
+    size: Annotated[int, typer.Option(help="Population size.")] = 500,
+    seed: Annotated[int, typer.Option(help="Population seed.")] = 1337,
+) -> None:
+    """Load the employee dimension into Postgres.
+
+    Everything downstream resolves identity and employee attributes through
+    this, so it is the first thing to run against a fresh database.
+    """
+    from bellwether.dimension import PostgresEmployeeRepository
+    from bellwether.generator.population import build_population
+
+    config = settings()
+    people = [
+        m.employee for m in build_population(size=size, tenant_id=config.tenant_id, seed=seed)
+    ]
+
+    repo = PostgresEmployeeRepository(config.postgres_dsn, load=False)
+    count = repo.upsert_many(people)
+    repo.close()
+
+    hvt = sum(1 for e in people if e.is_high_value_target)
+    console.print(f"loaded [green]{count:,}[/green] employees ({hvt:,} high-value targets)")
+
+
 @app.command()
 def ingest(
     connector: Annotated[str, typer.Option(help="Connector name, or 'all'.")] = "all",
@@ -74,9 +102,20 @@ def ingest(
         if name not in CONNECTORS:
             raise typer.BadParameter(f"unknown connector {name!r}; have: {', '.join(CONNECTORS)}")
 
-    directory = EmployeeDirectory(
-        [m.employee for m in build_population(size=size, tenant_id=config.tenant_id, seed=seed)]
-    )
+    # Identity resolution reads the same dimension scoring does. Rebuilding the
+    # population here instead would give the two halves of the pipeline
+    # independent opinions about who exists.
+    if cursors == "postgres":
+        from bellwether.dimension import PostgresEmployeeRepository
+
+        repo = PostgresEmployeeRepository(config.postgres_dsn, tenant_id=config.tenant_id)
+        if not repo.all():
+            raise typer.BadParameter("employee dimension is empty; run load-dimension first")
+        directory = EmployeeDirectory(repo.all())
+    else:
+        directory = EmployeeDirectory(
+            [m.employee for m in build_population(size=size, tenant_id=config.tenant_id, seed=seed)]
+        )
 
     raw_archive: RawArchive
     match archive:
@@ -186,6 +225,195 @@ def normalize(
 
     if stats.dead_lettered:
         console.print(f"inspect them: consume --topic {Topics.DLQ}")
+
+
+@app.command("score-stream")
+def score_stream(
+    max_messages: Annotated[int | None, typer.Option(help="Stop after N messages.")] = None,
+    group: Annotated[str, typer.Option(help="Consumer group id.")] = "bellwether-scorer",
+    state: Annotated[str, typer.Option(help="Online state: redis or memory.")] = "redis",
+    idle_timeout: Annotated[float, typer.Option(help="Stop after N idle seconds.")] = 5.0,
+    from_beginning: Annotated[bool, typer.Option(help="Read from the earliest offset.")] = True,
+    lookback: Annotated[int, typer.Option(help="Scoring window in days.")] = 30,
+) -> None:
+    """Score events.normalized onto the compacted risk.scores topic."""
+    from bellwether.dimension import PostgresEmployeeRepository
+    from bellwether.stream.runner import RunnerOptions, run_scorer
+    from bellwether.stream.scorer import Scorer
+    from bellwether.stream.store import EventWindow, InMemoryWindow, RedisWindow, ScoreState
+
+    config = settings()
+    employees = PostgresEmployeeRepository(config.postgres_dsn, tenant_id=config.tenant_id)
+    if not employees.all():
+        raise typer.BadParameter("employee dimension is empty; run load-dimension first")
+
+    store: EventWindow | ScoreState
+    if state == "redis":
+        store = RedisWindow(config.redis_url, tenant_id=config.tenant_id)
+    else:
+        store = InMemoryWindow()
+
+    scorer = Scorer(
+        employees=employees,
+        window=store,
+        state=store,
+        lookback_days=lookback,
+    )
+
+    console.print(
+        f"scoring {Topics.NORMALIZED} -> {Topics.SCORES} "
+        f"({len(employees.all()):,} employees, {lookback}d window, group {group})"
+    )
+    stats = run_scorer(
+        scorer=scorer,
+        bootstrap=config.kafka_bootstrap,
+        options=RunnerOptions(
+            group_id=group,
+            max_messages=max_messages,
+            idle_timeout=idle_timeout,
+            from_beginning=from_beginning,
+        ),
+    )
+
+    table = Table(title="score", header_style="bold")
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    table.add_row("scored", f"[green]{stats.scored:,}[/green]")
+    table.add_row("band changes", f"{stats.band_changes:,}")
+    table.add_row(
+        "unknown employee",
+        f"{stats.unknown_employee:,}"
+        if not stats.unknown_employee
+        else f"[yellow]{stats.unknown_employee:,}[/yellow]",
+    )
+    table.add_row(
+        "malformed",
+        f"{stats.malformed:,}" if not stats.malformed else f"[red]{stats.malformed:,}[/red]",
+    )
+    console.print(table)
+
+    if stats.scored:
+
+        def human(ms: float) -> str:
+            seconds = ms / 1000
+            if seconds < 90:
+                return f"{seconds:.2f}s"
+            if seconds < 86400:
+                return f"{seconds / 3600:.1f}h"
+            return f"{seconds / 86400:.1f}d"
+
+        console.print(
+            f"ingest->score   p50 {human(stats.percentile(50, pipeline=True))}  "
+            f"p95 {human(stats.percentile(95, pipeline=True))}  "
+            f"p99 {human(stats.percentile(99, pipeline=True))}   [dim](the SLO)[/dim]"
+        )
+        console.print(
+            f"behaviour->score p50 {human(stats.percentile(50))}  "
+            f"p95 {human(stats.percentile(95))}  "
+            f"p99 {human(stats.percentile(99))}   "
+            f"[dim](on a backfill this is the age of the history, not a delay)[/dim]"
+        )
+
+
+@app.command()
+def scores(
+    employee: Annotated[str | None, typer.Option(help="Show one employee.")] = None,
+    top: Annotated[int, typer.Option(help="How many to rank.")] = 15,
+    timeout: Annotated[float, typer.Option(help="Seconds to wait for messages.")] = 15.0,
+) -> None:
+    """Read the compacted risk.scores topic and rank the population."""
+    import uuid as _uuid
+
+    from confluent_kafka import Consumer, KafkaError
+
+    from bellwether.events.scores import RiskScoreEvent
+
+    config = settings()
+    consumer = Consumer(
+        {
+            "bootstrap.servers": config.kafka_bootstrap,
+            "group.id": f"bellwether-scores-{_uuid.uuid4()}",
+            "auto.offset.reset": "earliest",
+            "enable.auto.commit": False,
+        }
+    )
+    consumer.subscribe([Topics.SCORES])
+
+    latest: dict[str, RiskScoreEvent] = {}
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            message = consumer.poll(0.5)
+            if message is None:
+                continue
+            error = message.error()
+            if error is not None:
+                if error.code() == KafkaError._PARTITION_EOF:
+                    continue
+                break
+            payload = message.value()
+            if payload is None:
+                continue
+            record = RiskScoreEvent.model_validate_json(payload)
+            # Compaction keeps the newest per key, but a live topic still holds
+            # older versions until it runs, so take the latest by as_of.
+            existing = latest.get(record.employee_id)
+            if existing is None or record.as_of >= existing.as_of:
+                latest[record.employee_id] = record
+    finally:
+        consumer.close()
+
+    if not latest:
+        console.print(f"[yellow]no scores on {Topics.SCORES}[/yellow]; run score-stream first")
+        raise typer.Exit(1)
+
+    if employee:
+        one = latest.get(employee)
+        if one is None:
+            raise typer.BadParameter(f"no score for {employee}")
+        record = one
+        console.print(
+            f"\n[bold]{record.employee_id}[/bold]  score [bold]{record.score}[/bold]  "
+            f"band [bold]{record.band.value}[/bold]  from {record.events_considered} events"
+        )
+        if record.dominant_category:
+            console.print(f"driven by: {record.dominant_category.value}")
+        factors = Table(title="top factors", header_style="bold")
+        factors.add_column("signal")
+        factors.add_column("n", justify="right")
+        factors.add_column("contribution", justify="right")
+        for factor in record.top_factors:
+            factors.add_row(factor.signal, str(factor.occurrences), f"{factor.contribution:+.2f}")
+        console.print(factors)
+        return
+
+    ranked = sorted(latest.values(), key=lambda r: r.score, reverse=True)
+    table = Table(title=f"riskiest of {len(latest):,} scored employees", header_style="bold")
+    table.add_column("employee")
+    table.add_column("score", justify="right")
+    table.add_column("band")
+    table.add_column("driven by")
+    table.add_column("events", justify="right")
+    for record in ranked[:top]:
+        colour = {"critical": "red", "high": "red", "elevated": "yellow"}.get(
+            record.band.value, "dim"
+        )
+        table.add_row(
+            record.employee_id,
+            f"[{colour}]{record.score:.1f}[/{colour}]",
+            record.band.value,
+            record.dominant_category.value if record.dominant_category else "-",
+            str(record.events_considered),
+        )
+    console.print(table)
+
+    bands = Counter(r.band.value for r in latest.values())
+    console.print(
+        "  ".join(
+            f"{band}: {bands.get(band, 0)}"
+            for band in ("critical", "high", "elevated", "moderate", "low")
+        )
+    )
 
 
 if __name__ == "__main__":

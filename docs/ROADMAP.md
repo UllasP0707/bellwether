@@ -71,12 +71,53 @@ page" as its cursor, so every subsequent poll re-ingested the vendor's whole
 history. Downstream never noticed, because dedup absorbed it, which is exactly
 what made it worth catching: the only symptom was wasted vendor quota.
 
-## Day 3 — real-time scoring
+## Day 3 — real-time scoring ✅
 
-- [ ] Stream scorer consumer with per-employee 30-day window
-- [ ] Redis online feature store; Postgres employee dimension
-- [ ] `risk.scores` compacted topic
-- [ ] Consumer group rebalance and restart-from-offset behavior verified
+- [x] `ScorableEvent` protocol: scoring narrowed to the three fields it reads
+- [x] Employee dimension in Postgres, read by connectors and the scorer alike
+- [x] Redis online feature store: per-employee window plus last-known band
+- [x] Stream scorer consumer, `events.normalized` → `risk.scores`
+- [x] Band-transition detection and two latency metrics
+- [x] `scores` CLI: rank the population or drill into one employee
+- [x] Consumer group rebalance and restart-from-offset verified
+- [x] 32 new tests (139 total), CI green
+
+The protocol came first because it is load-bearing for day 6. Scoring took
+`Iterable[BehaviorEvent]`, which would have forced Spark executors to
+materialise millions of Pydantic models — slow enough that the tempting fix is
+to reimplement scoring in Spark, which is exactly the duplication the project
+exists to avoid. It now reads `employee_id`, `signal`, `occurred_at` and nothing
+else, so a Redis projection, a parsed model and a Spark `Row` all satisfy it.
+
+Verified against the running stack:
+
+| Check | Result |
+| --- | --- |
+| Pipeline | 7,789 ingested → normalized → scored, 0 unknown, 0 malformed |
+| Employees scored | 499 of 500 |
+| Distribution | 23 critical, 41 high, 79 elevated, 109 moderate, 247 low |
+| Band transitions detected | 440 |
+| `ingest → score` p50 / p99 | 33.4s / 50.4s |
+| Restart from committed offsets | 2,000 + 5,789 = 7,789 exactly |
+| Rebalance with a second consumer | 430 messages reprocessed, **scores unchanged** |
+
+The distribution matches day 1's offline computation over the lake — 4.6%
+critical either way — which is the first evidence that two independent paths
+over the same catalog agree. The real parity test lands on day 6.
+
+The rebalance number is the useful one. Adding a consumer mid-run redelivered
+430 uncommitted messages, and the resulting scores were byte-identical, because
+the window is keyed by `event_id`. At-least-once is only safe if reprocessing is
+provably inert, and that is what this measures.
+
+**Demo narrative, end to end:** E0042 sits at 67.52 (high). The scripted
+phishing chain — delivered, clicked, credentials submitted, 112 seconds — takes
+them to 89.19 (critical) with the band change flagged and
+`phish_credentials_submitted` named as the driver at +43.77.
+
+**Two real bugs found during verification** — see the commits. The window trimmed
+against wall-clock time rather than `as_of`, and the population issued colliding
+email addresses that silently merged 185 employees into other people's scores.
 
 ## Day 4 — interventions
 
