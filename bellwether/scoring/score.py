@@ -13,9 +13,49 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from typing import Protocol
 
-from bellwether.events.schema import BehaviorEvent, Employee, RiskCategory, SignalType
+from bellwether.events.schema import RiskCategory, SignalType
 from bellwether.scoring.catalog import spec_for
+
+
+class ScorableEvent(Protocol):
+    """The three fields scoring actually reads from an event.
+
+    Deliberately narrower than `BehaviorEvent`. Scoring runs in three places
+    that hold events in three different shapes: a stream consumer with parsed
+    models, a Redis window holding a compact projection, and Spark executors
+    holding `Row` objects. Requiring the full model would force the batch path
+    to materialise millions of Pydantic objects — slow enough that the tempting
+    fix is to reimplement the scoring logic in Spark, which is exactly the
+    duplication this project exists to avoid.
+
+    A structural type costs nothing and keeps one implementation reachable from
+    all three.
+    """
+
+    @property
+    def employee_id(self) -> str: ...
+
+    @property
+    def signal(self) -> SignalType: ...
+
+    @property
+    def occurred_at(self) -> datetime: ...
+
+
+class ScorableSubject(Protocol):
+    """What scoring needs to know about the person, beyond their events."""
+
+    @property
+    def employee_id(self) -> str: ...
+
+    @property
+    def tenant_id(self) -> str: ...
+
+    @property
+    def is_high_value_target(self) -> bool: ...
+
 
 # Scale constant for normalization. Chosen so that a single credential
 # submission on a phishing page (weight 25) lands around 60 — "act on this
@@ -122,8 +162,8 @@ def _normalize(raw: float) -> float:
 
 
 def score_events(
-    employee: Employee,
-    events: Iterable[BehaviorEvent],
+    employee: ScorableSubject,
+    events: Iterable[ScorableEvent],
     as_of: datetime,
     lookback_days: int = 30,
 ) -> RiskScore:
@@ -142,7 +182,7 @@ def score_events(
     Returns:
         The score, its per-category breakdown, and per-signal attribution.
     """
-    grouped: dict[str, list[tuple[float, BehaviorEvent]]] = {}
+    grouped: dict[str, list[tuple[float, ScorableEvent]]] = {}
     by_category: dict[RiskCategory, float] = {c: 0.0 for c in RiskCategory}
     raw = 0.0
     considered = 0
