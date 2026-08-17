@@ -201,3 +201,25 @@ def test_unknown_scenario_and_employee_raise() -> None:
         sim.incident("E0000", "not_a_scenario")
     with pytest.raises(KeyError):
         sim.incident("E9999", "phish_credential_chain")
+
+
+def test_email_addresses_are_unique() -> None:
+    """Identity resolution is by address, so a collision merges two people.
+
+    The name pool is small enough that collisions are certain at this size:
+    24 first names x 20 surnames is 480 combinations for 500 employees.
+    """
+    people = build_population(size=500, seed=1337)
+    emails = [m.employee.email for m in people]
+
+    assert all(emails), "every employee needs an address to be resolvable"
+    assert len(set(emails)) == len(emails), (
+        f"{len(emails) - len(set(emails))} employees share an address with someone else"
+    )
+
+
+def test_email_uniqueness_holds_at_larger_sizes() -> None:
+    """Well past the size where the raw name pool is exhausted."""
+    people = build_population(size=2000, seed=7)
+    emails = [m.employee.email for m in people]
+    assert len(set(emails)) == 2000

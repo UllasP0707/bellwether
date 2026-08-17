@@ -101,12 +101,31 @@ class EmployeeDirectory:
     """
 
     def __init__(self, employees: list[Employee]) -> None:
-        self._by_email = {
-            employee.email.lower(): employee.employee_id for employee in employees if employee.email
-        }
+        self._by_email: dict[str, str] = {}
+        self.ambiguous: set[str] = set()
+        for employee in employees:
+            if not employee.email:
+                continue
+            key = employee.email.strip().lower()
+            existing = self._by_email.get(key)
+            if existing is not None and existing != employee.employee_id:
+                # Two people, one address. Whatever the cause - a bad import, a
+                # shared mailbox, a directory bug - the honest answer is that
+                # this address does not identify anyone.
+                self.ambiguous.add(key)
+            self._by_email[key] = employee.employee_id
 
     def resolve(self, email: str) -> str | None:
-        return self._by_email.get(email.strip().lower())
+        """Resolve an address, or None if it does not identify exactly one person.
+
+        Refusing to guess matters more here than almost anywhere else in the
+        system: picking a winner would attribute one employee's phishing click
+        to a colleague, and the resulting score would look entirely plausible.
+        """
+        key = email.strip().lower()
+        if key in self.ambiguous:
+            return None
+        return self._by_email.get(key)
 
     def __len__(self) -> int:
         return len(self._by_email)

@@ -107,6 +107,10 @@ def build_population(
     """
     rng = random.Random(seed)
     population: list[PopulatedEmployee] = []
+    # Names are drawn from a small pool, so collisions are certain at this
+    # size. Real directories disambiguate rather than issue a shared mailbox,
+    # and anything that resolves identity by address depends on it.
+    issued_emails: set[str] = set()
 
     for i in range(size):
         employee_id = f"E{i:04d}"
@@ -121,6 +125,14 @@ def build_population(
         first = rng.choice(_FIRST_NAMES)
         last = rng.choice(_LAST_NAMES)
 
+        local_part = f"{first.lower()}.{last.lower()}"
+        email = f"{local_part}@{tenant_id}.example"
+        suffix = 2
+        while email in issued_emails:
+            email = f"{local_part}{suffix}@{tenant_id}.example"
+            suffix += 1
+        issued_emails.add(email)
+
         employee = Employee(
             employee_id=employee_id,
             tenant_id=tenant_id,
@@ -131,7 +143,7 @@ def build_population(
             has_admin_access=rng.random() < p_admin,
             handles_financial_data=rng.random() < p_finance,
             is_executive=department == "executive" or seniority == "director",
-            email=f"{first.lower()}.{last.lower()}@{tenant_id}.example",
+            email=email,
             display_name=f"{first} {last}",
         )
 

@@ -438,3 +438,55 @@ def test_resume_picks_up_records_that_arrive_later(
 
     stored = cursors.get(name, CONNECTORS[name].stream)
     assert stored is not None, "position was forgotten once the source ran dry"
+
+
+def test_an_ambiguous_address_resolves_to_nobody() -> None:
+    """Two people, one address: the directory must refuse to pick a winner.
+
+    Guessing would attribute one employee's phishing click to a colleague, and
+    the resulting score would look completely plausible - which is what makes
+    it the worst available failure for this product.
+    """
+    shared = "sam.chen@acme.example"
+    directory = EmployeeDirectory(
+        [
+            Employee(
+                employee_id="E0001",
+                tenant_id="acme",
+                department="sales",
+                seniority="mid",
+                tenure_days=100,
+                location="London",
+                email=shared,
+            ),
+            Employee(
+                employee_id="E0002",
+                tenant_id="acme",
+                department="legal",
+                seniority="senior",
+                tenure_days=900,
+                location="London",
+                email=shared,
+            ),
+        ]
+    )
+
+    assert directory.resolve(shared) is None
+    assert shared in directory.ambiguous
+
+
+def test_ambiguous_identities_are_counted_as_unresolved(
+    vendor: TestClient, directory: EmployeeDirectory
+) -> None:
+    """A refused resolution shows up in the drop counters, not silently."""
+    from bellwether.generator.population import build_population as _pop
+
+    people = [m.employee for m in _pop(size=POPULATION_SIZE, seed=SEED)]
+    collided = [e.model_copy(update={"email": "shared@acme.example"}) for e in people]
+
+    connector, sink = build_connector("okta", vendor, EmployeeDirectory(collided))
+    result = connector.run(limit=50)
+
+    assert result.emitted == 0
+    assert result.unresolved_identity > 0
+    assert sink.events == []
