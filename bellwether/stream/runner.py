@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from bellwether.config import Topics, settings
+from bellwether.interventions.handler import InterventionStage, InterventionStats
 from bellwether.stream.normalizer import Normalizer, NormalizerStats, Outcome
 from bellwether.stream.scorer import Scorer, ScorerStats
 
@@ -211,3 +212,29 @@ def run_scorer(
         processed=lambda: scorer.stats.total,
     )
     return scorer.stats
+
+
+def run_interventions(
+    stage: InterventionStage,
+    bootstrap: str | None = None,
+    options: RunnerOptions | None = None,
+    source_topic: str = Topics.SCORES,
+    target_topic: str = Topics.INTERVENTIONS,
+) -> InterventionStats:
+    """Decide interventions from `risk.scores` onto `bellwether.interventions`.
+
+    `commit_every` is 1 by default here, unlike the other stages. Elsewhere a
+    larger batch is free because reprocessing is inert; this stage's side effect
+    is a row in the intervention ledger, and while the uniqueness index makes a
+    duplicate *send* impossible, committing promptly keeps the amount of work
+    replayed after a crash small enough to reason about.
+    """
+    run_stage(
+        source_topic=source_topic,
+        handle=stage.handle,
+        route=lambda _: target_topic,
+        bootstrap=bootstrap,
+        options=options or RunnerOptions(group_id="bellwether-interventions", commit_every=1),
+        processed=lambda: stage.stats.total,
+    )
+    return stage.stats

@@ -316,6 +316,166 @@ def score_stream(
 
 
 @app.command()
+def intervene(
+    max_messages: Annotated[int | None, typer.Option(help="Stop after N messages.")] = None,
+    group: Annotated[str, typer.Option(help="Consumer group id.")] = "bellwether-interventions",
+    ledger: Annotated[str, typer.Option(help="Ledger: postgres or memory.")] = "postgres",
+    copy: Annotated[str, typer.Option(help="Copy source: auto, template, or model.")] = "auto",
+    cooldown_hours: Annotated[int, typer.Option(help="Per-type cooldown.")] = 72,
+    weekly_cap: Annotated[int, typer.Option(help="Max interventions per employee per week.")] = 3,
+    allow_manager: Annotated[
+        bool, typer.Option(help="Permit the manager-notification rung.")
+    ] = False,
+    idle_timeout: Annotated[float, typer.Option(help="Stop after N idle seconds.")] = 5.0,
+    from_beginning: Annotated[bool, typer.Option(help="Read from the earliest offset.")] = True,
+) -> None:
+    """Decide interventions from risk.scores and publish them to the outbox.
+
+    Nothing here delivers a message. The interventions topic is an outbox; a
+    delivery worker consuming it is what would actually reach a person, and it
+    is deliberately not part of this repo.
+    """
+    import os
+
+    from bellwether.dimension import PostgresEmployeeRepository
+    from bellwether.interventions import (
+        ClaudeCopywriter,
+        Copydesk,
+        InMemoryLedger,
+        InterventionLedger,
+        Policy,
+        PostgresLedger,
+    )
+    from bellwether.interventions.copy import Copywriter
+    from bellwether.interventions.handler import InterventionStage
+    from bellwether.stream.runner import RunnerOptions, run_interventions
+
+    config = settings()
+    employees = PostgresEmployeeRepository(config.postgres_dsn, tenant_id=config.tenant_id)
+    if not employees.all():
+        raise typer.BadParameter("employee dimension is empty; run load-dimension first")
+
+    store: InterventionLedger = (
+        PostgresLedger(config.postgres_dsn) if ledger == "postgres" else InMemoryLedger()
+    )
+
+    # `auto` uses the model when a key is present and the templates otherwise.
+    # Unset credentials are a configuration state, not an error: the static path
+    # is a supported way to run this, not a degraded one.
+    writer: Copywriter | None = None
+    if copy in {"auto", "model"}:
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            writer = ClaudeCopywriter()
+        elif copy == "model":
+            raise typer.BadParameter("--copy model needs ANTHROPIC_API_KEY set")
+
+    policy = Policy(
+        cooldown_hours=cooldown_hours,
+        weekly_cap=weekly_cap,
+        allow_manager_notification=allow_manager,
+    )
+    desk = Copydesk(model=writer)
+    stage = InterventionStage(employees=employees, ledger=store, copydesk=desk, policy=policy)
+
+    console.print(
+        f"deciding {Topics.SCORES} -> {Topics.INTERVENTIONS} "
+        f"(copy: {'claude + guardrails' if writer else 'templates'}, "
+        f"cooldown {cooldown_hours}h, cap {weekly_cap}/week, "
+        f"manager rung {'on' if allow_manager else 'off'})"
+    )
+    stats = run_interventions(
+        stage=stage,
+        bootstrap=config.kafka_bootstrap,
+        options=RunnerOptions(
+            group_id=group,
+            max_messages=max_messages,
+            idle_timeout=idle_timeout,
+            from_beginning=from_beginning,
+            commit_every=1,
+        ),
+    )
+
+    table = Table(title="interventions", header_style="bold")
+    table.add_column("outcome")
+    table.add_column("count", justify="right")
+    table.add_row("sent", f"[green]{stats.sent:,}[/green]")
+    for name, count in sorted(stats.by_type.items(), key=lambda kv: -kv[1]):
+        table.add_row(f"  {name}", f"{count:,}")
+    table.add_row("suppressed", f"{stats.suppressed:,}")
+    for reason, count in sorted(stats.by_reason.items(), key=lambda kv: -kv[1]):
+        table.add_row(f"  {reason}", f"[dim]{count:,}[/dim]")
+    if stats.unknown_employee:
+        table.add_row("unknown employee", f"[yellow]{stats.unknown_employee:,}[/yellow]")
+    if stats.malformed:
+        table.add_row("malformed", f"[red]{stats.malformed:,}[/red]")
+    console.print(table)
+
+    copy_stats = desk.stats
+    console.print(
+        f"copy: {copy_stats.model_drafts:,} from the model, "
+        f"{copy_stats.template_drafts:,} from templates, "
+        f"{copy_stats.guardrail_rejections:,} rejected by guardrails, "
+        f"{copy_stats.model_errors:,} generation failures"
+    )
+    if copy_stats.rejected_rules:
+        broken = ", ".join(f"{r} x{n}" for r, n in sorted(copy_stats.rejected_rules.items()))
+        console.print(f"[yellow]guardrails caught:[/yellow] {broken}")
+    if copy_stats.last_resort:
+        console.print(
+            f"[red]{copy_stats.last_resort:,} templates failed their own guardrails[/red]"
+        )
+
+    # Suppression is the expected outcome for most scores, so a run where
+    # nothing was suppressed usually means the policy is not being reached.
+    if stats.sent and not stats.suppressed:
+        console.print("[yellow]nothing was suppressed; check the policy is being applied[/yellow]")
+
+
+@app.command()
+def interventions(
+    employee: Annotated[str | None, typer.Option(help="Show one employee's history.")] = None,
+    limit: Annotated[int, typer.Option(help="How many to show.")] = 10,
+) -> None:
+    """Read the intervention ledger: what was sent, to whom, and why."""
+    from bellwether.interventions import PostgresLedger
+
+    config = settings()
+    store = PostgresLedger(config.postgres_dsn)
+
+    if employee is None:
+        totals = store.totals(config.tenant_id)
+        store.close()
+        if not totals:
+            console.print("[yellow]nothing sent yet[/yellow]; run intervene first")
+            raise typer.Exit(1)
+        table = Table(title="interventions sent", header_style="bold")
+        table.add_column("type")
+        table.add_column("count", justify="right")
+        for name, count in sorted(totals.items(), key=lambda kv: -kv[1]):
+            table.add_row(name, f"{count:,}")
+        console.print(table)
+        return
+
+    history = store.history(config.tenant_id, employee, limit=limit)
+    store.close()
+    if not history:
+        console.print(f"[yellow]nothing sent to {employee}[/yellow]")
+        raise typer.Exit(1)
+
+    for record in history:
+        console.print(
+            f"\n[bold]{record.created_at:%Y-%m-%d %H:%M}[/bold]  "
+            f"[cyan]{record.type.value}[/cyan] via {record.channel.value}  "
+            f"score {record.score:.1f} ({record.band.value})  "
+            f"[dim]copy: {record.copy_source.value}[/dim]"
+        )
+        if record.trigger_signal:
+            console.print(f"  triggered by [yellow]{record.trigger_signal.value}[/yellow]")
+        console.print(f"  [bold]{record.subject}[/bold]")
+        console.print(f"  {record.body}")
+
+
+@app.command()
 def scores(
     employee: Annotated[str | None, typer.Option(help="Show one employee.")] = None,
     top: Annotated[int, typer.Option(help="How many to rank.")] = 15,
