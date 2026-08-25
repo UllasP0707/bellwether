@@ -12,6 +12,29 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+
+    # The only service the suite needs. Almost everything under test is pure —
+    # the generator, the scoring function, the policy gates and the guardrails
+    # all run without anything listening on a port — but the stores that persist
+    # employees, cursors and interventions have read paths that only a real
+    # database exercises, and two bugs got through precisely there.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bellwether
+          POSTGRES_PASSWORD: bellwether
+          POSTGRES_DB: bellwether
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U bellwether"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      BELLWETHER_POSTGRES_DSN: postgresql://bellwether:bellwether@localhost:5432/bellwether
+
     steps:
       - uses: actions/checkout@v4
 
@@ -35,8 +58,17 @@ jobs:
       - name: Type check
         run: mypy bellwether
 
-      # No services needed: everything under test is pure. The generator, the
-      # scoring function and the lake sink all run without a broker, which is
-      # what keeps this job under a minute.
       - name: Test
         run: pytest -q
+
+      # The database-backed tests skip themselves when nothing is listening,
+      # which is right locally and wrong here: a silent skip in CI is the same
+      # as not having written them. Fail if they did not run.
+      - name: Assert the database tests actually ran
+        run: |
+          pytest -q -m postgres --collect-only >/dev/null
+          pytest -q -m postgres -p no:cacheprovider --no-header -rs 2>&1 | tee /tmp/pg.log
+          if grep -q "skipped" /tmp/pg.log; then
+            echo "::error::postgres tests were skipped in CI"
+            exit 1
+          fi

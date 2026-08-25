@@ -79,6 +79,13 @@ _COLUMNS = (
     "created_at",
 )
 
+# `intervention_id` is a uuid column, and psycopg hands back a `UUID` object,
+# which is not what the wire contract says the field is. Casting at the query
+# rather than converting after it keeps the row mapping a plain zip.
+_SELECT = ", ".join(
+    "intervention_id::text AS intervention_id" if c == "intervention_id" else c for c in _COLUMNS
+)
+
 
 @dataclass(frozen=True)
 class Policy:
@@ -308,7 +315,7 @@ class PostgresLedger:
     def history(self, tenant_id: str, employee_id: str, limit: int = 20) -> list[InterventionEvent]:
         with self._connection.cursor() as cur:
             cur.execute(
-                f"SELECT {', '.join(_COLUMNS)} FROM intervention "
+                f"SELECT {_SELECT} FROM intervention "
                 "WHERE tenant_id = %s AND employee_id = %s "
                 "ORDER BY created_at DESC LIMIT %s",
                 (tenant_id, employee_id, limit),

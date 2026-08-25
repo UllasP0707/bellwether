@@ -8,6 +8,11 @@ requires-python = ">=3.12"
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q --strict-markers"
+markers = [
+    # Needs a reachable Postgres. Skipped when there is none, so the default run
+    # stays fast and offline; CI runs a database so they are not optional there.
+    "postgres: round-trips against a real database",
+]
 
 [tool.ruff]
 line-length = 100
