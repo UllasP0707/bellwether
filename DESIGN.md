@@ -167,8 +167,26 @@ the partition counts and retention below.
 | `bellwether.events.raw` | source event id | 7d | connectors | Replay buffer for connector bugs. |
 | `bellwether.events.normalized` | employee_id | 30d | normalizer | The event-sourced spine. Rebuild any downstream state from here. |
 | `bellwether.events.dlq` | employee_id | 90d | any stage | What a stage could route but not trust. |
-| `bellwether.risk.scores` | employee_id | compacted | scorer | Latest score per employee; compaction makes it a queryable snapshot. |
-| `bellwether.interventions` | employee_id | 30d | day 4 | Emitted actions, audited. |
+| `bellwether.risk.scores` | employee_id | 30d | scorer | Every score, including the ones where a band changed. |
+| `bellwether.interventions` | employee_id | 30d | intervention stage | Emitted actions, audited. |
+
+**`risk.scores` was compacted, and that was wrong.** Keeping only the latest
+score per employee is a reasonable thing to want, and a terrible property for
+the topic the intervention stage triggers from: the record in which somebody
+crossed from elevated into high is exactly what the cleaner is entitled to
+delete, and a consumer that fell behind for any ordinary reason would never
+learn it had missed a crossing.
+
+Kafka's answer is `min.compaction.lag.ms`. Redpanda accepts it, reports OK, and
+stores nothing — as it also does for `min.cleanable.dirty.ratio`, which this
+repo had claimed to set since day 2 and never had. That only surfaced by reading
+the config back after writing it, so `scripts/create_topics.sh` now does exactly
+that and prints a warning for any setting the broker quietly dropped.
+
+The fix was not to work around the broker but to stop asking one topic to be two
+things. A log stays a log, and the latest-score snapshot lives in Redis, where
+the read path wants it anyway and a point lookup is one round trip rather than a
+topic scan.
 
 **The two event topics are keyed differently on purpose, and that is the reason
 there are two of them.** Raw is keyed by the vendor's record id: it spreads
@@ -176,11 +194,6 @@ connector output evenly and lets a connector republish a record without knowing
 or caring whose it is. Per-employee stateful scoring needs the opposite —
 everything about one person on one partition — so the normalizer re-keys onto
 `employee_id`. A single topic could not satisfy both.
-
-Partition counts are chosen from the consumer side: 12 partitions on
-`normalized` caps the scorer at 12 parallel instances. Verified on the raw
-topic — a 30-day backfill of 8,606 events spread 1284–1589 across its 6
-partitions, which is what employee-key hashing should give.
 
 Partition counts are chosen from the consumer side: events are keyed by
 employee, so 12 partitions on `normalized` caps the scorer at 12 parallel
@@ -275,7 +288,8 @@ category the system could hold.
 - **Designed.** Retention: raw payloads 30d, normalized events 400d, aggregates
   indefinitely, enforced by a scheduled job rather than by convention (day 10).
 - **Designed.** Deletion: one function resolves a token, purges the dimension
-  row, and tombstones the compacted score topic (day 10).
+  row, drops their Redis projection, and lets the score log age out under its
+  own retention (day 10).
 - **Designed.** The read API is tenant-scoped at the query layer and every score
   read is written to an audit log — who looked at whose risk score is itself
   sensitive (day 5).
