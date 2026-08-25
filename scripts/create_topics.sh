@@ -30,9 +30,19 @@ create bellwether.events.normalized 12 \
 # Compacted: the latest score per employee is a snapshot we want to keep
 # indefinitely without keeping every intermediate score forever. Tombstones
 # also give employee deletion somewhere to land.
+#
+# min.compaction.lag.ms is what makes this topic safe to *trigger* from, and it
+# is not optional. A compacted topic is a snapshot, not a log: the cleaner is
+# free to delete the intermediate record in which an employee crossed from
+# elevated into high, keeping only their latest score. The intervention stage
+# reads this topic to find exactly those crossings, so a consumer that fell
+# behind — a deploy, a rebalance, a long weekend — could have the evidence
+# deleted underneath it and silently never act on it. Holding records
+# uncompactable for a week means no consumer inside that week can be outrun.
 create bellwether.risk.scores 6 \
   --topic-config cleanup.policy=compact \
-  --topic-config min.cleanable.dirty.ratio=0.1
+  --topic-config min.cleanable.dirty.ratio=0.1 \
+  --topic-config min.compaction.lag.ms=604800000
 
 create bellwether.interventions 3 \
   --topic-config retention.ms=2592000000
