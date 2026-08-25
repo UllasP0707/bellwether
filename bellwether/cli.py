@@ -348,6 +348,10 @@ def serve(
     if not employees.all():
         raise typer.BadParameter("employee dimension is empty; run load-dimension first")
 
+    # One Postgres connection per store, not a pool. psycopg serialises
+    # concurrent use behind a lock, so this is correct but not concurrent — the
+    # read path is bounded by how fast a security team clicks, and a pool is the
+    # first thing to add if that ever stops being true.
     store = RedisOnlineStore(config.redis_url, tenant_id=config.tenant_id)
     api = create_app(
         tenants={

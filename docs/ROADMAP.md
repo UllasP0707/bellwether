@@ -157,11 +157,41 @@ copy because "Lin" is inside "public link". A `uuid` column read back as a
 a 32-day-old credential submission, too old to contribute anything to the score
 it was attached to, still told someone to reset their password *now*.
 
-## Day 5 — serving
+## Day 5 — serving ✅
 
-- [ ] FastAPI: employee score, timeline, population ranking, department rollup
-- [ ] Tenant scoping and read audit log
-- [ ] Minimal dashboard: ranked list, one employee drill-down, live updates
+- [x] Scorer projects each score into Redis: snapshot per employee, sorted set
+      for ranking, folded into the pipeline that already wrote the band
+- [x] FastAPI: score, timeline, ranking, department rollup, intervention
+      history, the signal catalog, and the read audit log itself
+- [x] Tenant scoping from the credential, never from the request
+- [x] Read audit log in Postgres, written before the response
+- [x] Dashboard: ranked list, drill-down, live refresh, no build step
+- [x] 39 new tests (324 total), CI green
+
+Verified against the running stack — 499 employees projected, API serving:
+
+| Check | Result |
+| --- | --- |
+| Ranking | E0208 91.49, E0069 88.21, E0042 86.71 … |
+| Emails anywhere in a 200-row ranking | 0 |
+| No key / bad key / good key | 401 / 401 / 200 |
+| Another tenant's employee | 404, byte-identical to a missing one |
+| Path traversal in an employee id | 404 at the edge |
+| Reads recorded | one row per drill-down, none for browsing |
+| Departments | finance mean 31.5 / p90 75.5, 33 of 33 scored |
+
+Two decisions carry the section. **Tenancy is a property of the credential** —
+no endpoint takes a tenant, so there is no parameter to override, and a foreign
+employee is indistinguishable from a missing one because a 403 would confirm
+they exist. **The privacy gradient** — browsing the population is pseudonymous
+and unaudited, looking one person up is named and audited. A tool that ranks
+colleagues by how much of a liability they are will be opened for reasons that
+have nothing to do with security.
+
+Population analytics stop here on purpose. Departments folds live over the
+projection, which is right for one company's headcount and the wrong shape for
+a trend or a cohort — an online store that gets scanned stops being fast for the
+queries it exists for. Those are the marts, on day 7.
 
 ## Day 6 — batch
 

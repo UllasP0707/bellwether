@@ -357,9 +357,25 @@ category the system could hold.
 - **Designed.** Deletion: one function resolves a token, purges the dimension
   row, drops their Redis projection, and lets the score log age out under its
   own retention (day 10).
-- **Designed.** The read API is tenant-scoped at the query layer and every score
-  read is written to an audit log — who looked at whose risk score is itself
-  sensitive (day 5).
+- **Built.** The read API takes its tenant from the credential and not from the
+  request, so there is no parameter a caller can set to reach across one. An
+  employee belonging to another tenant returns 404 with a body byte-identical to
+  a genuinely missing one; a 403 would confirm the person exists, which is the
+  thing tenancy is supposed to hide, and a test asserts the two cannot be told
+  apart.
+- **Built.** A privacy gradient across the read path. Ranking the population
+  returns tokens and scores with no names, so browsing is pseudonymous and is
+  not audited. Looking one person up returns their name and writes a row to the
+  read audit log, synchronously, before the response is built — including when
+  that person turns out to have no score, because the look happened either way.
+
+  Both halves of that are deliberate. Who looked at whose risk score is itself
+  sensitive: a tool that sorts colleagues by how much of a liability they are
+  will be opened for reasons that have nothing to do with security, and a record
+  of every look is the only thing that makes that answerable afterwards. But
+  auditing the *ranking* too would bury those reads under a row for every
+  dashboard refresh, which is how an audit log becomes unreadable and therefore
+  useless.
 
 ## What I would do differently at real scale
 
@@ -370,9 +386,19 @@ Honest list, since these are the questions an interviewer should ask.
   windowing, checkpointed state, and event-time watermarks instead of the
   hand-rolled window this design calls for. The load test on day 9 is what will
   tell me where the actual ceiling is, rather than my guess at it.
-- **Postgres is doing three jobs** (dimension, dedup ledger, serving). At scale
-  those separate: dimension stays relational, dedup moves to Redis with TTLs,
-  serving moves behind a read replica or a purpose-built store.
+- **The read path serves live state and nothing historical.** Per-employee reads
+  and the ranking are point and range queries against the Redis projection the
+  scorer writes; the department rollup folds live over that projection, which is
+  fine for one company's headcount and the wrong shape for a trend or a cohort.
+  Anything spanning more than the current instant belongs in the marts, because
+  an online store that gets scanned stops being fast for the queries it exists
+  for. The API also runs one Postgres connection per store rather than a pool —
+  psycopg serialises concurrent use, so it is correct but not concurrent.
+- **Postgres is doing four jobs** — the employee dimension, connector cursors,
+  the intervention ledger and the read audit log. Those separate under load:
+  the dimension stays relational, the audit log becomes append-only storage
+  nothing reads in a request path, and the ledger's uniqueness check is the only
+  one that genuinely needs a transactional store.
 - **Iceberg over raw Parquet.** Parquet plus a directory convention is enough for
   a demo; schema evolution and time-travel are what make reprocessing safe, and
   those want a table format.
