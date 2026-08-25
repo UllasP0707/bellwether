@@ -147,6 +147,8 @@ class Scorer:
         message = RiskScoreEvent.from_risk_score(
             result,
             previous_band=previous,
+            triggered_by=event.signal,
+            trigger_event_id=event.event_id,
             event_latency_ms=event_latency_ms,
             pipeline_latency_ms=pipeline_latency_ms,
         )

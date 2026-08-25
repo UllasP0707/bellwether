@@ -15,7 +15,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from bellwether.events.schema import RiskCategory
+from bellwether.events.schema import RiskCategory, SignalType
 from bellwether.scoring import RiskBand, RiskScore
 
 SCORE_SCHEMA_VERSION = 1
@@ -51,6 +51,18 @@ class RiskScoreEvent(BaseModel):
     previous_band: RiskBand | None = None
     band_changed: bool = False
 
+    # The event that caused this rescore. Without it, decisioning cannot tell a
+    # *new* credential submission from one that happened three weeks ago and is
+    # still decaying inside the window — `top_factors` looks identical either
+    # way, so "intervene when someone submits credentials" would re-fire on
+    # every subsequent rescore for the whole lookback period.
+    #
+    # `trigger_event_id` is also what makes the intervention stage idempotent:
+    # it is the uniqueness key in the ledger, so a redelivered score message
+    # cannot produce a second message to a person.
+    triggered_by: SignalType | None = None
+    trigger_event_id: str | None = None
+
     dominant_category: RiskCategory | None = None
     by_category: dict[RiskCategory, float] = Field(default_factory=dict)
     top_factors: list[FactorPayload] = Field(default_factory=list)
@@ -72,6 +84,8 @@ class RiskScoreEvent(BaseModel):
         cls,
         result: RiskScore,
         previous_band: RiskBand | None = None,
+        triggered_by: SignalType | None = None,
+        trigger_event_id: str | None = None,
         event_latency_ms: float | None = None,
         pipeline_latency_ms: float | None = None,
         factors: int = 5,
@@ -84,6 +98,8 @@ class RiskScoreEvent(BaseModel):
             as_of=result.as_of,
             previous_band=previous_band,
             band_changed=previous_band is not None and previous_band is not result.band,
+            triggered_by=triggered_by,
+            trigger_event_id=trigger_event_id,
             dominant_category=result.dominant_category,
             by_category=result.by_category,
             top_factors=[
