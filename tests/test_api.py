@@ -422,6 +422,12 @@ def test_a_malformed_employee_id_is_rejected_at_the_edge(client: TestClient, bad
     assert get(client, f"/v1/employees/{bad}/score").status_code in (404, 422)
 
 
+def test_the_dashboard_is_served(client: TestClient) -> None:
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "Bellwether" in response.text
+
+
 # --- key parsing --------------------------------------------------------------------
 
 

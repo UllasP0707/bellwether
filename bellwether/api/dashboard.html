@@ -1,0 +1,242 @@
+<!doctype html>
+<!--
+  One file, no build step, no framework.
+
+  A dashboard exists here to make the pipeline legible in ninety seconds, and a
+  toolchain that has to be installed before anyone can see that is a worse
+  trade than a few hundred lines of plain DOM. It reads the same public API as
+  any other client, so if something renders wrong the API is wrong.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bellwether</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #262d38;
+    --ink: #e6edf3; --muted: #8b949e;
+    --critical: #f85149; --high: #ff8c42; --elevated: #e3b341;
+    --moderate: #58a6ff; --low: #3fb950;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f8fa; --panel: #fff; --line: #d8dee4;
+      --ink: #1f2328; --muted: #636c76;
+      --critical: #cf222e; --high: #bc4c00; --elevated: #9a6700;
+      --moderate: #0969da; --low: #1a7f37;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 18px 24px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
+  h1 span { color: var(--muted); font-weight: 400; }
+  .bands { margin-left: auto; display: flex; gap: 14px; font-size: 12px; }
+  .bands b { font-variant-numeric: tabular-nums; }
+  main { display: grid; grid-template-columns: minmax(340px, 460px) 1fr; gap: 1px; background: var(--line); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--bg); padding: 18px 24px; min-height: calc(100vh - 62px); }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+       color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--panel); }
+  tbody tr[aria-selected="true"] { background: var(--panel); box-shadow: inset 2px 0 0 var(--moderate); }
+  .num { text-align: right; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+          font-weight: 600; border: 1px solid currentColor; }
+  .critical { color: var(--critical); } .high { color: var(--high); }
+  .elevated { color: var(--elevated); } .moderate { color: var(--moderate); }
+  .low { color: var(--low); }
+  .muted { color: var(--muted); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .score { font-size: 44px; font-weight: 650; line-height: 1; letter-spacing: -0.03em; }
+  .row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .bar { height: 5px; border-radius: 3px; background: currentColor; opacity: .85; min-width: 2px; }
+  .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+  .msg { border-left: 2px solid var(--elevated); padding-left: 12px; margin: 12px 0; }
+  .msg p { margin: 4px 0; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+  button { font: inherit; background: none; border: 1px solid var(--line); color: var(--muted);
+           border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+  button:hover { color: var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bellwether <span id="count">—</span></h1>
+  <div class="bands" id="bands"></div>
+  <button id="refresh">refresh</button>
+</header>
+
+<main>
+  <section>
+    <h2>Riskiest right now</h2>
+    <table>
+      <thead><tr>
+        <th>Employee</th><th>Department</th><th class="num">Score</th><th>Band</th><th>Driven by</th>
+      </tr></thead>
+      <tbody id="ranking"></tbody>
+    </table>
+    <p class="muted" style="margin-top:14px;font-size:12px">
+      The list is pseudonymous on purpose. Opening one person shows their name and
+      writes a row to the read audit log.
+    </p>
+  </section>
+
+  <section id="detail">
+    <div class="empty">Select someone.</div>
+  </section>
+</main>
+
+<script>
+const KEY = new URLSearchParams(location.search).get("key") || "localdev";
+const BANDS = ["critical", "high", "elevated", "moderate", "low"];
+const $ = (id) => document.getElementById(id);
+
+async function api(path) {
+  const r = await fetch(path, { headers: { "X-API-Key": KEY } });
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const pill = (b) => `<span class="pill ${b}">${b}</span>`;
+const words = (s) => esc(String(s ?? "").replace(/_/g, " "));
+
+let selected = null;
+
+async function loadRanking() {
+  const rows = await api("/v1/population/ranking?limit=50");
+  $("count").textContent = `— ${rows.length} shown, riskiest first`;
+
+  const counts = Object.fromEntries(BANDS.map((b) => [b, 0]));
+  rows.forEach((r) => counts[r.band]++);
+  $("bands").innerHTML = BANDS
+    .map((b) => `<span class="${b}">${b} <b>${counts[b]}</b></span>`)
+    .join("");
+
+  $("ranking").innerHTML = rows.map((r) => `
+    <tr data-id="${esc(r.employee_id)}" ${r.employee_id === selected ? 'aria-selected="true"' : ""}>
+      <td><code>${esc(r.employee_id)}</code></td>
+      <td class="muted">${words(r.department)}</td>
+      <td class="num ${r.band}"><b>${r.score.toFixed(1)}</b></td>
+      <td>${pill(r.band)}</td>
+      <td class="muted">${words(r.dominant_category) || "—"}</td>
+    </tr>`).join("");
+
+  document.querySelectorAll("#ranking tr").forEach((tr) =>
+    tr.addEventListener("click", () => select(tr.dataset.id)));
+}
+
+async function select(id) {
+  selected = id;
+  document.querySelectorAll("#ranking tr").forEach((tr) =>
+    tr.setAttribute("aria-selected", tr.dataset.id === id));
+
+  const [score, timeline, sent] = await Promise.all([
+    api(`/v1/employees/${id}/score`),
+    api(`/v1/employees/${id}/timeline?limit=25`),
+    api(`/v1/employees/${id}/interventions`),
+  ]);
+
+  const worst = Math.max(...timeline.entries.map((e) => Math.abs(e.contribution)), 1);
+
+  $("detail").innerHTML = `
+    <h2>${esc(score.display_name || id)} <span class="muted">· ${esc(id)}</span></h2>
+
+    <div class="card">
+      <div class="row">
+        <div class="score ${score.band}">${score.score.toFixed(1)}</div>
+        <div>
+          ${pill(score.band)}
+          ${score.previous_band && score.previous_band !== score.band
+            ? `<span class="muted">from ${esc(score.previous_band)}</span>` : ""}
+          <div class="muted">${words(score.department)} · ${words(score.seniority)}
+            ${score.is_high_value_target ? "· high-value target" : ""}</div>
+          <div class="muted">${score.events_considered} events ·
+            driven by ${words(score.dominant_category) || "nothing"}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>What is driving it</h2>
+      ${score.top_factors.length ? score.top_factors.map((f) => `
+        <div style="margin-bottom:10px">
+          <div class="row" style="justify-content:space-between">
+            <span>${words(f.signal)} ${f.occurrences > 1
+              ? `<span class="muted">×${f.occurrences}</span>` : ""}</span>
+            <span class="num ${score.band}">+${f.contribution.toFixed(2)}</span>
+          </div>
+          <div class="bar ${score.band}" style="width:${Math.min(
+            100, (f.contribution / score.top_factors[0].contribution) * 100)}%"></div>
+          <div class="muted" style="font-size:12px">${esc(f.description)}</div>
+        </div>`).join("") : '<p class="muted">Nothing is contributing.</p>'}
+    </div>
+
+    <div class="card">
+      <h2>Interventions sent (${sent.length})</h2>
+      ${sent.length ? sent.map((i) => `
+        <div class="msg">
+          <div class="row" style="justify-content:space-between">
+            <b>${esc(i.subject)}</b>
+            <span class="muted">${new Date(i.created_at).toLocaleString()}</span>
+          </div>
+          <p>${esc(i.body)}</p>
+          <p class="muted" style="font-size:12px">
+            ${words(i.type)} via ${esc(i.channel)} ·
+            triggered by ${words(i.trigger_signal) || "a band change"} ·
+            copy from ${esc(i.copy_source)}
+          </p>
+        </div>`).join("")
+        : '<p class="muted">Nothing sent. Most scores never warrant a message.</p>'}
+    </div>
+
+    <div class="card">
+      <h2>Recent behaviour</h2>
+      <table>
+        <thead><tr><th>When</th><th>Signal</th><th class="num">Worth today</th></tr></thead>
+        <tbody>${timeline.entries.map((e) => `
+          <tr>
+            <td class="muted">${new Date(e.occurred_at).toLocaleDateString()}
+              <span style="font-size:11px">${e.age_days.toFixed(0)}d ago</span></td>
+            <td>${words(e.signal)}</td>
+            <td class="num ${e.contribution < 0 ? "low" : ""}">
+              ${e.contribution >= 0 ? "+" : ""}${e.contribution.toFixed(2)}
+              <div class="bar ${e.contribution < 0 ? "low" : score.band}"
+                   style="width:${(Math.abs(e.contribution) / worst) * 60}px;margin-left:auto"></div>
+            </td>
+          </tr>`).join("")}</tbody>
+      </table>
+      <p class="muted" style="font-size:12px;margin-top:10px">
+        Worth today, not when it happened — every signal decays on its own half-life.
+      </p>
+    </div>`;
+}
+
+async function refresh() {
+  try {
+    await loadRanking();
+    if (selected) await select(selected);
+  } catch (err) {
+    $("detail").innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+  }
+}
+
+$("refresh").addEventListener("click", refresh);
+refresh();
+setInterval(loadRanking, 10000);
+</script>
+</body>
+</html>
