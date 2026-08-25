@@ -41,6 +41,11 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # API credentials, as `key:tenant:actor` triples separated by commas. The
+    # tenant a request may read is a property of the key and never of the
+    # request, so there is no parameter a caller can set to change it.
+    api_keys: str = "localdev:acme:analyst"
+
     # Scoring lookback. Events older than this stop contributing, which bounds
     # both the streaming window and the batch scan.
     score_lookback_days: int = Field(default=30, ge=1, le=365)

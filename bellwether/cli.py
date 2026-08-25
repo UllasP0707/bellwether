@@ -321,6 +321,63 @@ def score_stream(
 
 
 @app.command()
+def serve(
+    port: Annotated[int, typer.Option(help="Port to serve on.")] = 8800,
+    host: Annotated[str, typer.Option(help="Bind address.")] = "127.0.0.1",
+    reload: Annotated[bool, typer.Option(help="Reload on code changes.")] = False,
+) -> None:
+    """Serve the read API and the dashboard.
+
+    Reads the online projection in Redis, the dimension and ledger in Postgres.
+    Nothing here touches Kafka: serving a request by scanning a topic is how a
+    dashboard ends up slower than the pipeline behind it.
+    """
+    import uvicorn
+
+    from bellwether.api import PostgresAudit, TenantContext, create_app, parse_keys
+    from bellwether.dimension import PostgresEmployeeRepository
+    from bellwether.interventions import PostgresLedger
+    from bellwether.stream.store import RedisOnlineStore
+
+    config = settings()
+    principals = parse_keys(config.api_keys)
+    if not principals:
+        raise typer.BadParameter("no API keys configured; set BELLWETHER_API_KEYS")
+
+    employees = PostgresEmployeeRepository(config.postgres_dsn, tenant_id=config.tenant_id)
+    if not employees.all():
+        raise typer.BadParameter("employee dimension is empty; run load-dimension first")
+
+    store = RedisOnlineStore(config.redis_url, tenant_id=config.tenant_id)
+    api = create_app(
+        tenants={
+            config.tenant_id: TenantContext(
+                scores=store,
+                employees=employees,
+                interventions=PostgresLedger(config.postgres_dsn),
+                window=store,
+            )
+        },
+        principals=principals,
+        audit=PostgresAudit(config.postgres_dsn),
+        lookback_days=config.score_lookback_days,
+    )
+
+    scored = store.scored_count()
+    console.print(
+        f"serving [bold]{len(employees.all()):,}[/bold] employees, [bold]{scored:,}[/bold] scored"
+    )
+    if not scored:
+        console.print("[yellow]no scores projected yet[/yellow]; run score-stream first")
+    for key, principal in principals.items():
+        console.print(f"  key [dim]{key}[/dim] -> {principal.actor} @ {principal.tenant_id}")
+    console.print(f"dashboard http://{host}:{port}/?key={next(iter(principals))}")
+    console.print(f"docs      http://{host}:{port}/docs")
+
+    uvicorn.run(api, host=host, port=port, reload=reload, log_level="warning")
+
+
+@app.command()
 def intervene(
     max_messages: Annotated[int | None, typer.Option(help="Stop after N messages.")] = None,
     group: Annotated[str, typer.Option(help="Consumer group id.")] = "bellwether-interventions",
