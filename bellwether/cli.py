@@ -322,6 +322,9 @@ def intervene(
     ledger: Annotated[str, typer.Option(help="Ledger: postgres or memory.")] = "postgres",
     copy: Annotated[str, typer.Option(help="Copy source: auto, template, or model.")] = "auto",
     cooldown_hours: Annotated[int, typer.Option(help="Per-type cooldown.")] = 72,
+    min_spacing_hours: Annotated[
+        int, typer.Option(help="Minimum gap between any two messages to one person.")
+    ] = 24,
     weekly_cap: Annotated[int, typer.Option(help="Max interventions per employee per week.")] = 3,
     allow_manager: Annotated[
         bool, typer.Option(help="Permit the manager-notification rung.")
@@ -371,6 +374,7 @@ def intervene(
 
     policy = Policy(
         cooldown_hours=cooldown_hours,
+        min_spacing_hours=min_spacing_hours,
         weekly_cap=weekly_cap,
         allow_manager_notification=allow_manager,
     )
@@ -380,7 +384,7 @@ def intervene(
     console.print(
         f"deciding {Topics.SCORES} -> {Topics.INTERVENTIONS} "
         f"(copy: {'claude + guardrails' if writer else 'templates'}, "
-        f"cooldown {cooldown_hours}h, cap {weekly_cap}/week, "
+        f"cooldown {cooldown_hours}h, spacing {min_spacing_hours}h, cap {weekly_cap}/week, "
         f"manager rung {'on' if allow_manager else 'off'})"
     )
     stats = run_interventions(
