@@ -149,6 +149,7 @@ class Scorer:
             previous_band=previous,
             triggered_by=event.signal,
             trigger_event_id=event.event_id,
+            triggered_at=event.occurred_at,
             event_latency_ms=event_latency_ms,
             pipeline_latency_ms=pipeline_latency_ms,
         )

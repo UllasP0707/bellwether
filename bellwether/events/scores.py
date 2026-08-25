@@ -60,8 +60,13 @@ class RiskScoreEvent(BaseModel):
     # `trigger_event_id` is also what makes the intervention stage idempotent:
     # it is the uniqueness key in the ledger, so a redelivered score message
     # cannot produce a second message to a person.
+    # `triggered_at` is the event's own time, not this score's. Without it the
+    # intervention stage cannot tell recent behaviour from history being
+    # replayed, and it acted on a credential submission from 32 days earlier —
+    # one already too old to contribute anything to the score it was attached to.
     triggered_by: SignalType | None = None
     trigger_event_id: str | None = None
+    triggered_at: datetime | None = None
 
     dominant_category: RiskCategory | None = None
     by_category: dict[RiskCategory, float] = Field(default_factory=dict)
@@ -86,6 +91,7 @@ class RiskScoreEvent(BaseModel):
         previous_band: RiskBand | None = None,
         triggered_by: SignalType | None = None,
         trigger_event_id: str | None = None,
+        triggered_at: datetime | None = None,
         event_latency_ms: float | None = None,
         pipeline_latency_ms: float | None = None,
         factors: int = 5,
@@ -100,6 +106,7 @@ class RiskScoreEvent(BaseModel):
             band_changed=previous_band is not None and previous_band is not result.band,
             triggered_by=triggered_by,
             trigger_event_id=trigger_event_id,
+            triggered_at=triggered_at,
             dominant_category=result.dominant_category,
             by_category=result.by_category,
             top_factors=[

@@ -84,6 +84,15 @@ class Decider:
         if isinstance(trigger, SuppressionReason):
             return _suppress(trigger)
 
+        # Recency is checked before anything else costs a database round trip,
+        # and it applies to both kinds of trigger. A signal trigger fires on the
+        # event itself, so an old event means an old concern. A band rise looks
+        # current but is not: replaying history rescores each employee with
+        # `as_of` set to now, so the score climbs to its true present value and
+        # every crossing on the way up is an artefact of ingestion order.
+        if not self._is_recent(score, now):
+            return _suppress(SuppressionReason.TRIGGER_TOO_OLD)
+
         prior = self.ledger.count_since(
             score.tenant_id,
             score.employee_id,
@@ -121,6 +130,18 @@ class Decider:
             prior_in_window=prior,
             disengaged=disengaged,
         )
+
+    def _is_recent(self, score: RiskScoreEvent, now: datetime) -> bool:
+        """Whether the behaviour behind this score is recent enough to act on.
+
+        An absent `triggered_at` counts as not recent. The system acts on things
+        that just happened; if it cannot establish when something happened, the
+        honest response is to leave it alone rather than assume the convenient
+        answer.
+        """
+        if score.triggered_at is None:
+            return False
+        return now - score.triggered_at <= timedelta(hours=self.policy.max_trigger_age_hours)
 
     def _trigger(self, score: RiskScoreEvent) -> Trigger | SuppressionReason:
         """What, if anything, justifies contacting this person.

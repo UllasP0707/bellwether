@@ -62,6 +62,7 @@ def score(
     previous_band: RiskBand | None = RiskBand.ELEVATED,
     triggered_by: SignalType | None = SignalType.PHISH_SIM_CLICKED,
     trigger_event_id: str | None = "evt-1",
+    triggered_at: datetime | None = NOW,
     employee_id: str = "E0042",
     by_category: dict[RiskCategory, float] | None = None,
     factors: list[FactorPayload] | None = None,
@@ -82,6 +83,7 @@ def score(
         band_changed=previous_band is not None and previous_band is not band,
         triggered_by=triggered_by,
         trigger_event_id=trigger_event_id,
+        triggered_at=triggered_at,
         dominant_category=RiskCategory.PHISHING_SUSCEPTIBILITY,
         by_category=by_category or {RiskCategory.PHISHING_SUSCEPTIBILITY: 12.0},
         top_factors=factors
@@ -171,6 +173,48 @@ def test_a_critical_signal_triggers_even_below_the_threshold(signal: SignalType)
 
     assert verdict.send
     assert verdict.trigger is Trigger.CRITICAL_SIGNAL
+
+
+def test_a_stale_trigger_does_not_fire() -> None:
+    """A real bug, found in the live data rather than here.
+
+    A credential submission 32 days old — already outside the scoring lookback,
+    contributing exactly zero to the score it was attached to — still produced a
+    message telling the employee to reset their password "now". The system was
+    simultaneously saying the event was too old to matter and acting on it.
+    """
+    decider = Decider(Policy(max_trigger_age_hours=48), InMemoryLedger())
+    verdict = decider.evaluate(
+        score(
+            triggered_by=SignalType.PHISH_CREDENTIALS_SUBMITTED,
+            triggered_at=NOW - timedelta(days=32),
+        ),
+        NOW,
+    )
+
+    assert verdict.suppressed == "trigger_too_old"
+
+
+def test_replaying_history_does_not_message_the_population() -> None:
+    """Backfill safety falls out of the recency gate rather than needing a mode.
+
+    Reprocessing rescores thirty days of behaviour with `as_of` set to now, so
+    the score climbs to its true present value and every band crossing on the
+    way up is an artefact of ingestion order. Without this, replaying the log
+    means messaging everyone about last month.
+    """
+    decider = Decider(Policy(), InMemoryLedger())
+    verdict = decider.evaluate(
+        score(RiskBand.HIGH, RiskBand.ELEVATED, triggered_at=NOW - timedelta(days=12)), NOW
+    )
+
+    assert verdict.suppressed == "trigger_too_old"
+
+
+def test_a_trigger_with_no_time_is_treated_as_stale() -> None:
+    """If recency cannot be established, the honest answer is not to act."""
+    decider = Decider(Policy(), InMemoryLedger())
+    assert decider.evaluate(score(triggered_at=None), NOW).suppressed == "trigger_too_old"
 
 
 def test_an_ordinary_signal_does_not_trigger_on_its_own() -> None:
@@ -336,14 +380,20 @@ def test_replaying_a_score_sends_nothing_new() -> None:
     click producing first a nudge and then a training assignment. Keying on the
     triggering event alone is what makes the replay genuinely inert.
     """
-    stage, ledger = build_stage()
+    # Every rate gate is switched off, so the uniqueness index is the only thing
+    # left that can stop a second send. With the defaults in place the spacing
+    # gate catches a replay first, which is correct behaviour and would leave
+    # the fence underneath it untested.
+    stage, ledger = build_stage(
+        policy=Policy(min_spacing_hours=0, cooldown_hours=0, weekly_cap=10_000)
+    )
     payload = score().model_dump_json().encode()
 
     first = stage.handle(payload, now=NOW)
     assert first.outcome is InterventionOutcome.SENT
 
     for _ in range(5):
-        again = stage.handle(payload, now=NOW + timedelta(days=30))
+        again = stage.handle(payload, now=NOW)
 
     assert again.outcome is InterventionOutcome.SUPPRESSED
     assert again.reason == "already_sent"

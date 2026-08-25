@@ -69,6 +69,7 @@ class SuppressionReason(StrEnum):
     NO_TRIGGER = "no_trigger"
     BAND_FELL = "band_fell"
     BELOW_THRESHOLD = "below_threshold"
+    TRIGGER_TOO_OLD = "trigger_too_old"
     COOLDOWN = "cooldown"
     TOO_SOON = "too_soon"
     WEEKLY_CAP = "weekly_cap"

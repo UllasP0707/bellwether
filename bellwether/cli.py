@@ -321,6 +321,9 @@ def intervene(
     group: Annotated[str, typer.Option(help="Consumer group id.")] = "bellwether-interventions",
     ledger: Annotated[str, typer.Option(help="Ledger: postgres or memory.")] = "postgres",
     copy: Annotated[str, typer.Option(help="Copy source: auto, template, or model.")] = "auto",
+    max_trigger_age_hours: Annotated[
+        int, typer.Option(help="How old the triggering behaviour may be.")
+    ] = 48,
     cooldown_hours: Annotated[int, typer.Option(help="Per-type cooldown.")] = 72,
     min_spacing_hours: Annotated[
         int, typer.Option(help="Minimum gap between any two messages to one person.")
@@ -373,6 +376,7 @@ def intervene(
             raise typer.BadParameter("--copy model needs ANTHROPIC_API_KEY set")
 
     policy = Policy(
+        max_trigger_age_hours=max_trigger_age_hours,
         cooldown_hours=cooldown_hours,
         min_spacing_hours=min_spacing_hours,
         weekly_cap=weekly_cap,
@@ -384,7 +388,8 @@ def intervene(
     console.print(
         f"deciding {Topics.SCORES} -> {Topics.INTERVENTIONS} "
         f"(copy: {'claude + guardrails' if writer else 'templates'}, "
-        f"cooldown {cooldown_hours}h, spacing {min_spacing_hours}h, cap {weekly_cap}/week, "
+        f"trigger age {max_trigger_age_hours}h, cooldown {cooldown_hours}h, "
+        f"spacing {min_spacing_hours}h, cap {weekly_cap}/week, "
         f"manager rung {'on' if allow_manager else 'off'})"
     )
     stats = run_interventions(

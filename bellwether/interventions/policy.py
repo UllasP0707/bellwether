@@ -94,6 +94,17 @@ class Policy:
     Attributes:
         min_band: Nothing fires below this. Someone drifting from low to
             moderate does not need to hear about it.
+        max_trigger_age_hours: How old the behaviour that caused a rescore may
+            be. An intervention is a response to something recent; past a couple
+            of days there is no moment left to be salient, and the message reads
+            as the system having just noticed.
+
+            This also makes replaying history safe without a separate operating
+            mode. A backfill rescores thirty days of behaviour with `as_of` set
+            to now, so every band crossing it produces is an artefact of
+            ingestion order rather than anything that happened to anyone — and
+            without this gate, reprocessing the log means messaging the entire
+            population about last month.
         cooldown_hours: One intervention per employee *per type* per window.
         min_spacing_hours: Minimum gap between any two interventions to the
             same person, whatever their types. This exists because the per-type
@@ -115,6 +126,7 @@ class Policy:
     """
 
     min_band: RiskBand = RiskBand.ELEVATED
+    max_trigger_age_hours: int = 48
     cooldown_hours: int = 72
     min_spacing_hours: int = 24
     weekly_cap: int = 3
