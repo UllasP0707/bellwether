@@ -161,6 +161,32 @@ def _normalize(raw: float) -> float:
     return 100.0 * (1.0 - math.exp(-raw / _SATURATION))
 
 
+def contribution_of(
+    signal: SignalType,
+    occurred_at: datetime,
+    as_of: datetime,
+    is_high_value_target: bool = False,
+) -> float:
+    """What one event is worth at a point in time.
+
+    Public, and used by `score_events` itself, so the read path can explain a
+    score without owning a second copy of the decay arithmetic. The API's
+    timeline shows what each event is costing an employee *today*; if that
+    number were computed anywhere but here it would drift from the score it is
+    supposed to explain, and the explanation would quietly become fiction.
+    """
+    spec = spec_for(signal)
+    age_days = (as_of - occurred_at).total_seconds() / 86400.0
+    contribution = spec.weight * _decay(age_days, spec.half_life_days)
+
+    # Amplify aggravating signals only. Scaling up someone's mitigating signals
+    # because they're an executive would let a single training completion erase
+    # a real exposure.
+    if contribution > 0 and is_high_value_target:
+        contribution *= _HVT_MULTIPLIER
+    return contribution
+
+
 def score_events(
     employee: ScorableSubject,
     events: Iterable[ScorableEvent],
@@ -187,8 +213,6 @@ def score_events(
     raw = 0.0
     considered = 0
 
-    amplify = _HVT_MULTIPLIER if employee.is_high_value_target else 1.0
-
     for event in events:
         if event.employee_id != employee.employee_id:
             continue
@@ -198,13 +222,9 @@ def score_events(
             continue
 
         spec = spec_for(event.signal)
-        contribution = spec.weight * _decay(age_days, spec.half_life_days)
-
-        # Amplify aggravating signals only. Scaling up someone's mitigating
-        # signals because they're an executive would let a single training
-        # completion erase a real exposure.
-        if contribution > 0:
-            contribution *= amplify
+        contribution = contribution_of(
+            event.signal, event.occurred_at, as_of, employee.is_high_value_target
+        )
 
         raw += contribution
         by_category[spec.category] += contribution

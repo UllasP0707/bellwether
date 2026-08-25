@@ -5,6 +5,7 @@ from bellwether.scoring.score import (
     ScorableEvent,
     ScorableSubject,
     ScoreFactor,
+    contribution_of,
     score_events,
 )
 
@@ -16,6 +17,7 @@ __all__ = [
     "ScorableSubject",
     "ScoreFactor",
     "SignalSpec",
+    "contribution_of",
     "score_events",
     "spec_for",
 ]
