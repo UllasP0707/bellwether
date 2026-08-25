@@ -188,11 +188,17 @@ class Guardrails:
         for address in _EMAIL.findall(combined):
             violations.append(Violation("pii", f"email address {address!r}"))
 
+        # Word-anchored, not substring. A bare `in` check means any employee
+        # whose surname happens to be a fragment of an English word can never
+        # receive normal copy: "Lin" is inside "public link", so two employees
+        # named Lin had every template rejected and fell through to the
+        # last-resort text. It fails safe, which is why it went unnoticed until
+        # the fallback counter was there to say how often it was firing.
         for term in forbidden:
             term = term.strip()
             if not term or (first_name and term.lower() == first_name.lower()):
                 continue
-            if term.lower() in lowered:
+            if re.search(rf"\b{re.escape(term.lower())}\b", lowered):
                 violations.append(Violation("pii", f"forbidden term {term!r}"))
 
         for host in _URL.findall(combined):

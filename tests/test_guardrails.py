@@ -147,6 +147,34 @@ def test_the_first_name_is_allowed_even_though_it_is_inside_a_forbidden_term() -
     )
 
 
+def test_a_surname_inside_an_ordinary_word_is_not_a_leak() -> None:
+    """A real bug, found in production counters rather than in this file.
+
+    The forbidden-term check was a bare substring match, so the surname "Lin"
+    matched inside "public link" and every template was rejected for anyone
+    called Lin — who then received the last-resort copy instead. It fails safe,
+    which is exactly why nothing surfaced it until the fallback was counted.
+    """
+    body = (
+        "Hi Yuki, a few documents you shared recently went out more broadly than "
+        "they needed to. Please review your shares and remove any public links."
+    )
+    assert (
+        GUARDRAILS.check(
+            "A note on how some files were shared",
+            body,
+            forbidden=("E0486", "Lin", "yuki.lin@acme.example", "yuki.lin"),
+            first_name="Yuki",
+        )
+        == []
+    )
+
+
+def test_a_surname_standing_alone_is_still_a_leak() -> None:
+    body = CLEAN_BODY.replace("Hi Dana", "Hi Yuki Lin")
+    assert "pii" in rules(body=body, forbidden=("Lin",), first_name="Yuki")
+
+
 def test_an_internal_identifier_is_rejected() -> None:
     """A signal name is a database key, not a sentence."""
     body = CLEAN_BODY + " Reason: phish_credentials_submitted was observed."
