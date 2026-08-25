@@ -13,3 +13,7 @@ structlog>=24.1,<26
 pyarrow>=17.0
 boto3>=1.35,<2
 httpx>=0.27,<1
+# Intervention copy. Optional at runtime: with no ANTHROPIC_API_KEY set the
+# copy desk uses static templates, which is a supported configuration rather
+# than a degraded one.
+anthropic>=0.40,<1

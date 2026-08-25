@@ -5,6 +5,15 @@ something a human notices, which is why most of the code in this package is
 concerned with *not* acting.
 """
 
+from bellwether.interventions.copy import (
+    ClaudeCopywriter,
+    CopyBrief,
+    Copydesk,
+    CopyUnavailableError,
+    Draft,
+    TemplateCopywriter,
+)
+from bellwether.interventions.guardrails import Guardrails, Violation
 from bellwether.interventions.policy import (
     InMemoryLedger,
     InterventionLedger,
@@ -23,7 +32,13 @@ from bellwether.interventions.types import (
 
 __all__ = [
     "Channel",
+    "ClaudeCopywriter",
+    "CopyBrief",
     "CopySource",
+    "CopyUnavailableError",
+    "Copydesk",
+    "Draft",
+    "Guardrails",
     "InMemoryLedger",
     "InterventionEvent",
     "InterventionLedger",
@@ -31,6 +46,8 @@ __all__ = [
     "Policy",
     "PostgresLedger",
     "SuppressionReason",
+    "TemplateCopywriter",
+    "Violation",
     "band_rose",
     "cooldown_active",
 ]
