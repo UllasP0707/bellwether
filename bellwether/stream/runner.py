@@ -120,8 +120,18 @@ def run_stage(
         between the flush and the commit, the input is redelivered and the
         duplicates are absorbed downstream. Committing first would drop anything
         still sitting in the producer's queue.
+
+        Committing nothing is not the same as committing zero messages:
+        librdkafka raises `_NO_OFFSET` when asked to commit with no offsets
+        stored. That made the unconditional commit after the loop a crash in two
+        real cases — running a stage against an empty topic, and any stage whose
+        message count is an exact multiple of `commit_every`, which the
+        intervention stage hits on every single message because it commits
+        eagerly.
         """
         nonlocal since_commit
+        if since_commit == 0:
+            return
         producer.flush(30)
         consumer.commit(asynchronous=False)
         since_commit = 0
