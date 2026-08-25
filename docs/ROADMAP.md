@@ -119,12 +119,43 @@ them to 89.19 (critical) with the band change flagged and
 against wall-clock time rather than `as_of`, and the population issued colliding
 email addresses that silently merged 185 employees into other people's scores.
 
-## Day 4 — interventions
+## Day 4 — interventions ✅
 
-- [ ] Decisioning: band crossings and specific-signal triggers
-- [ ] Cooldown, weekly cap, escalation ladder, all enforced in Postgres
-- [ ] Claude-generated copy from the employee's top factors
-- [ ] Guardrail validator + static-template fallback
+- [x] Decisioning: band crossings, four critical-signal triggers, recency gate
+- [x] Cooldown, minimum spacing, weekly cap, escalation ladder, all in Postgres
+- [x] Claude-generated copy from the employee's top factors
+- [x] Guardrail validator + static-template fallback, both validated
+- [x] Intervention ledger with a uniqueness index that fences replays
+- [x] `intervene` and `interventions` CLI
+- [x] Postgres round-trip tests, run against a real database in CI
+- [x] 146 new tests (285 total), CI green
+
+The gates matter more than the triggers. A human-risk platform whose failure
+mode is messaging people too much stops being used, and then it protects nobody.
+
+Verified against the running stack:
+
+| Check | Result |
+| --- | --- |
+| Scores decided | 7,789, every one accounted for |
+| Replaying 30 days of history | **0 messages sent**, 212 stale triggers refused |
+| One live incident | 3 events → 1 band change → exactly 1 nudge |
+| Replay with every rate gate disabled | 137 `already_sent`, ledger unchanged |
+| Interventions below the band threshold | 68 of 137, reached only by signal triggers |
+| Templates failing their own guardrails | 0 |
+
+The 68 is the number worth pointing at. Those employees never crossed a band —
+they have no accumulated history to push them over one — and a policy built on
+crossings alone would never have contacted a single one of them. Four had just
+handed credentials to a phishing page.
+
+**Four real bugs, three of them found by running it rather than by testing it.**
+The runner crashed committing an offset that did not exist. The PII check
+matched surnames as bare substrings, so both employees named Lin got fallback
+copy because "Lin" is inside "public link". A `uuid` column read back as a
+`UUID` where the contract says `str`. And the one worth reading the commit for:
+a 32-day-old credential submission, too old to contribute anything to the score
+it was attached to, still told someone to reset their password *now*.
 
 ## Day 5 — serving
 
