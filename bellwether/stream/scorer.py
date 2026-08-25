@@ -137,7 +137,6 @@ class Scorer:
         )
 
         previous = self.state.band(event.employee_id)
-        self.state.set_band(event.employee_id, result.band)
 
         event_latency_ms = (now - event.occurred_at).total_seconds() * 1000.0
         pipeline_latency_ms = (now - event.ingested_at).total_seconds() * 1000.0
@@ -153,6 +152,13 @@ class Scorer:
             event_latency_ms=event_latency_ms,
             pipeline_latency_ms=pipeline_latency_ms,
         )
+
+        # Recorded after the message is built, not before, so the projection the
+        # API serves is byte-identical to the one on the topic. Writing the band
+        # first and the snapshot later would leave a window in which the
+        # dashboard and the crossing detector disagreed about the same person.
+        self.state.record(message)
+
         return ScoreDecision(
             ScoreOutcome.SCORED,
             key=message.partition_key(),

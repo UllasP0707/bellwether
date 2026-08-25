@@ -240,7 +240,12 @@ def score_stream(
     from bellwether.dimension import PostgresEmployeeRepository
     from bellwether.stream.runner import RunnerOptions, run_scorer
     from bellwether.stream.scorer import Scorer
-    from bellwether.stream.store import EventWindow, InMemoryWindow, RedisWindow, ScoreState
+    from bellwether.stream.store import (
+        EventWindow,
+        InMemoryOnlineStore,
+        RedisOnlineStore,
+        ScoreState,
+    )
 
     config = settings()
     employees = PostgresEmployeeRepository(config.postgres_dsn, tenant_id=config.tenant_id)
@@ -249,9 +254,9 @@ def score_stream(
 
     store: EventWindow | ScoreState
     if state == "redis":
-        store = RedisWindow(config.redis_url, tenant_id=config.tenant_id)
+        store = RedisOnlineStore(config.redis_url, tenant_id=config.tenant_id)
     else:
-        store = InMemoryWindow()
+        store = InMemoryOnlineStore()
 
     scorer = Scorer(
         employees=employees,

@@ -15,7 +15,7 @@ from bellwether.events.schema import BehaviorEvent, Employee, SignalType, Source
 from bellwether.events.scores import RiskScoreEvent
 from bellwether.scoring import RiskBand, score_events
 from bellwether.stream.scorer import ScoreOutcome, Scorer
-from bellwether.stream.store import MAX_WINDOW_EVENTS, InMemoryWindow, WindowedEvent
+from bellwether.stream.store import MAX_WINDOW_EVENTS, InMemoryOnlineStore, WindowedEvent
 
 NOW = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 
@@ -51,8 +51,8 @@ def raw_event(
     return event.model_dump_json().encode()
 
 
-def build_scorer(*employees: Employee) -> tuple[Scorer, InMemoryWindow]:
-    window = InMemoryWindow()
+def build_scorer(*employees: Employee) -> tuple[Scorer, InMemoryOnlineStore]:
+    window = InMemoryOnlineStore()
     people = list(employees) or [employee()]
     return Scorer(InMemoryEmployeeRepository(people), window, window), window
 
@@ -236,7 +236,7 @@ def test_percentile_of_nothing_is_zero_not_an_error() -> None:
 
 
 def test_window_drops_events_outside_the_lookback() -> None:
-    window = InMemoryWindow()
+    window = InMemoryOnlineStore()
     fresh = datetime.now(UTC)
     window.add(WindowedEvent("E1", SignalType.PHISH_SIM_CLICKED, fresh, "new"), lookback_days=30)
     window.add(
@@ -249,7 +249,7 @@ def test_window_drops_events_outside_the_lookback() -> None:
 
 def test_window_is_capped_per_employee() -> None:
     """One noisy admin account must not be able to exhaust memory."""
-    window = InMemoryWindow()
+    window = InMemoryOnlineStore()
     fresh = datetime.now(UTC)
     for i in range(MAX_WINDOW_EVENTS + 50):
         window.add(
