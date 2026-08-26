@@ -31,41 +31,57 @@ That splits into two workloads with incompatible shapes:
 The naive solution builds these twice. That is the failure mode this project is
 organized to avoid.
 
-## Core constraint: one signal catalog — `[partly built]`
-
-*Built: the catalog, the shared scoring function, and the streaming path that
-calls it. Not yet built: the batch path, and therefore the parity test.*
+## Core constraint: one signal catalog — `[built]`
 
 Every behavior Bellwether understands is declared once, in
 [`bellwether/scoring/catalog.py`](bellwether/scoring/catalog.py), as a `SignalSpec`:
 weight, direction, half-life, risk category.
 
-The streaming scorer and the Spark batch scorer are intended as two evaluation
-strategies over the same catalog and the same pure `score_events()` function, so
-that a weight change is one edit both paths pick up. A `test_score_parity` case
-will replay a fixed event log through both and assert the scores agree.
+The streaming scorer and the Spark batch scorer are two evaluation strategies
+over that one catalog and the same pure `score_events()`, so a weight change is
+one edit both paths pick up.
 
-**The streaming path exists; the batch path does not.** Until it and the parity
-test land (day 6), this section is an argument for a design rather than a
-description of a working guarantee. It remains the most important thing left to
-prove, because it is the reason the project is structured the way it is.
+**This is now measured rather than asserted.**
+[`tests/test_score_parity.py`](tests/test_score_parity.py) replays one fixed
+event log through the real stream consumer and the real Spark job at the same
+`as_of` and compares them employee by employee: 120 employees, 1,986 events, 21
+distinct signals, **zero disagreements, largest absolute delta 0.0**. Exact
+equality, not a tolerance. Over the live 7,792-event lake the same comparison
+puts 498 employees on both paths with a maximum deviation of 0.01, which is the
+few minutes of extra decay between the two runs.
 
 What makes it reachable is that scoring reads a *structural* type rather than a
 concrete one. `ScorableEvent` is three fields — `employee_id`, `signal`,
-`occurred_at` — so the stream consumer's parsed models, the Redis window's
-compact projection, and Spark's `Row` objects all satisfy it without conversion.
-Had `score_events` kept its original `Iterable[BehaviorEvent]` signature, the
-batch path would have had to materialise millions of Pydantic models per run,
-and the obvious remedy would have been a second implementation in Spark — which
-is precisely the outcome this design is meant to prevent.
+`occurred_at`. Had `score_events` kept its original `Iterable[BehaviorEvent]`
+signature, the batch path would have had to materialise millions of Pydantic
+models per run, and the obvious remedy would have been a second implementation
+in Spark — precisely the outcome this design exists to prevent.
 
-One early signal that it holds: the streaming path scores the population into
-23 critical / 41 high / 79 elevated / 109 moderate / 247 low, and the day-1
-offline computation over the lake put 4.6% critical. Same answer, two callers.
+An earlier draft of this section claimed Spark `Row` objects satisfy the
+protocol *without conversion*. They do not, quite: a Row hands back `signal` as
+a plain string and scoring calls `.value` on it, so `BatchEvent` is an adapter.
+The accurate claim is the one worth making — the protocol is why the adapter is
+five lines rather than a second scoring implementation.
+
+**The parity test earned its place on its first run**, by failing. Spark
+materialises `TimestampType` as a *naive* datetime, so events that went into the
+lake timezone-aware came back out without it and scoring raised. Raising was the
+lucky outcome: had scoring been tolerant of naive timestamps, every decay
+calculation in the batch path would have silently picked up the session
+timezone's offset and the two paths would have disagreed by hours with neither
+looking wrong.
+
+It also found a genuine semantic divergence that no fixture would have shown.
+Comparing the whole live population turned up one employee whose only event was
+33 days old: the batch job dropped them, the stream published a zero. A zero
+asserts the person is low risk, and a zero computed from no in-window events is
+indistinguishable from a genuinely clean record. The stream is now silent in
+that case — see [Delivery semantics](#delivery-semantics--built).
 
 This is the standard train/serve skew problem wearing a different hat, and the
 answer is the same: the definition must live in one place that both paths
-import, not in two places that a human keeps in sync.
+import, not in two places that a human keeps in sync. The difference is that a
+test now says so.
 
 **Cost of the choice.** The scoring function is constrained to what both a
 Python stream consumer and a Spark executor can run — no per-event database

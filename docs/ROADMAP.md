@@ -193,11 +193,42 @@ projection, which is right for one company's headcount and the wrong shape for
 a trend or a cohort — an online store that gets scanned stops being fast for the
 queries it exists for. Those are the marts, on day 7.
 
-## Day 6 — batch
+## Day 6 — batch ✅
 
-- [ ] PySpark: JSONL → Parquet, daily per-employee rollups
-- [ ] Batch scorer over the lake using the same `score_events`
-- [ ] **`test_score_parity`**: replay a fixed log through stream and batch, assert equal
+- [x] PySpark: JSONL → Parquet partitioned by event date, daily rollups
+- [x] Batch scorer over the lake using the same `score_events`
+- [x] **`test_score_parity`**: one fixed log, both paths, asserted equal
+- [x] A portable parity layer that needs no JVM and runs everywhere
+- [x] Spark container (JDK 17) and a CI job that fails if parity skipped
+- [x] 10 new tests (334 total), CI green
+
+| Check | Result |
+| --- | --- |
+| Fixture | 120 employees, 1,986 events, 21 distinct signals |
+| Scores that disagree | **0** |
+| Largest absolute delta | **0.0** — exact, not a tolerance |
+| Over the live lake (7,792 events) | 498 employees on both paths, max delta 0.01 |
+| Spark ranking vs Redis projection | same top ten, same order |
+
+The parity test paid for itself on its first run, twice.
+
+**It failed immediately** on a bug nothing else would have caught: Spark
+materialises `TimestampType` as a *naive* datetime, so events written to the
+lake timezone-aware came back without it. Raising was the lucky outcome — had
+scoring tolerated naive timestamps, every decay calculation in the batch path
+would have silently absorbed the session timezone's offset.
+
+**Then the live comparison found a real semantic divergence.** One employee,
+whose only event was 33 days old, was scored by the stream and dropped by the
+batch job. The batch job was right: a zero computed from no in-window events
+claims somebody is low risk when the truth is that we have no data on them.
+
+A third bug came out of running the suite in the Spark container, which is a
+different machine on a different day —
+`test_signals_reaching_the_pipeline_cover_the_catalog` had been passing on luck.
+The simulator generates a quarter as much activity at weekends, and the vendor
+fixture backfilled to *now*, so a seeded generator was still producing different
+data every day.
 
 ## Day 7 — transform and orchestrate
 

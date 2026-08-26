@@ -2,9 +2,10 @@
 
 This module is the reason the project is organized the way it is. The streaming
 scorer and the Spark batch scorer are two evaluation strategies over this one
-table. A weight change is one edit that both paths pick up, and
-`tests/test_score_parity.py` replays a fixed event log through both to prove
-they still agree.
+table, so a weight change is one edit that both paths pick up —
+`tests/test_score_parity.py` replays a fixed event log through both and requires
+the scores to match exactly. Changing a number here changes both answers or
+fails the build; there is no third outcome where they drift.
 
 Weights are on an open-ended scale, not 0-100 — normalization happens once, in
 `bellwether.scoring.score`. Keeping raw weights unbounded means adding a new signal
