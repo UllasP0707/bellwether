@@ -349,6 +349,53 @@ better for reading them, but that needs a consumer writing engagement back into
 the ledger. The ladder currently approximates it from whether the employee's
 security-engagement signals are net aggravating.
 
+## The warehouse, and where derivation is allowed to happen — `[built]`
+
+Spark writes Parquet, a loader copies it into Postgres, dbt builds staging and
+marts on top. The loader does no transformation at all: everything that shapes a
+number happens either upstream in Spark or downstream in dbt, so there is never
+a third place to look for where it came from.
+
+**Loads are delete-then-insert scoped to the days present in the input, not
+upserts.** An upsert cannot remove a row that should no longer exist, so
+reprocessing a day after fixing a parser bug would leave the bad rows beside the
+good ones and every count would be quietly high. A day is the unit because it is
+what Spark partitions by and what `{{ ds }}` means, and the whole load is one
+transaction so a crash leaves the previous day intact rather than half-deleted.
+
+**The signal catalog reaches SQL as a generated seed.** Weights in a `case`
+statement would be a second copy of the scoring model, one layer further out
+than the stream/batch parity test can see, and it would go stale the first time
+somebody rebalanced a weight. The CSV is generated from
+`bellwether/scoring/catalog.py`, committed so it shows up in a diff, and a test
+regenerates it and fails if it has drifted. The daily DAG refuses to build marts
+against a stale one.
+
+**Facts store additive quantities, never scores.** `fct_employee_daily_risk`
+holds the day's undecayed weighted sum. Scores are a saturating function of a
+decayed 30-day window, so Monday's score plus Tuesday's score is meaningless —
+keeping the additive quantity is what makes a `group by` over an arbitrary slice
+of time correct rather than approximately correct.
+
+**Nothing downstream may re-derive a band.** Thresholds live in `RiskBand.of()`
+and the intervention policy, the API and the dashboard all depend on that. A mart
+recomputing the boundary in SQL would make the warehouse and the product
+disagree about who is critical, with both looking right in isolation, so
+`assert_marts_do_not_reband` recomputes the banding the way SQL would be tempted
+to and requires it to match what the scorer said. Four more singular tests cover
+the grain, the score range, PII and that every signal in the warehouse is priced.
+All five were checked against deliberately corrupted rows rather than assumed to
+work.
+
+Staging drops PII at the boundary, so no mart can leak a name and neither can
+any BI tool built on these models — the columns are not there to select.
+
+The department rollup overlaps with a live API endpoint deliberately, and the
+difference is the point: the API answers "right now" for a few hundred people
+from Redis, the mart answers "over any period" for any number. Serving trend from
+an online store means scanning it, and an online store that gets scanned stops
+being fast for the point lookups it exists for.
+
 ## Handling employee data — `[partly built]`
 
 This is behavioral data about identifiable people, which is the most sensitive
@@ -368,8 +415,23 @@ category the system could hold.
   *which person*. This was a real bug, not a hypothetical: the synthetic
   population issued colliding addresses and silently merged 185 people into
   others' scores before anything noticed.
-- **Designed.** Retention: raw payloads 30d, normalized events 400d, aggregates
-  indefinitely, enforced by a scheduled job rather than by convention (day 10).
+- **Built.** Retention, on its own schedule, with a horizon per store and a row
+  count for what it removed. The horizons follow what each store is *for*: lake
+  partitions are a replay buffer for connector bugs, so 30 days is long enough
+  to notice a parser is wrong and reprocess; the read audit log outlives the
+  data it describes, at 400 days, because somebody asking "who looked at me last
+  quarter" needs an answer after that score is gone; batch score snapshots are
+  recomputable from the lake and so are the one thing dropped freely, at 90 days.
+
+  It is a separate DAG rather than a task on the daily batch job, because a
+  retention run that only happens when a rollup succeeds is a policy that
+  quietly lapses for the week Spark is broken. A partition whose name it cannot
+  parse is left alone and reported: the failure mode has to be keeping too much,
+  never deleting something it did not understand.
+
+  Kafka is deliberately excluded. The topics enforce their own retention, and a
+  second system racing them to it is how you get two components disagreeing
+  about whether data still exists.
 - **Designed.** Deletion: one function resolves a token, purges the dimension
   row, drops their Redis projection, and lets the score log age out under its
   own retention (day 10).

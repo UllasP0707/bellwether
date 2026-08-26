@@ -230,12 +230,40 @@ The simulator generates a quarter as much activity at weekends, and the vendor
 fixture backfilled to *now*, so a seeded generator was still producing different
 data every day.
 
-## Day 7 — transform and orchestrate
+## Day 7 — transform and orchestrate ✅
 
-- [ ] dbt models: staging → per-employee daily → department and cohort marts
-- [ ] dbt tests on the marts
-- [ ] Airflow DAGs: hourly ingest, daily rollup, retention enforcement
-- [ ] Backfill a DAG run to prove reprocessing works
+- [x] Parquet → Postgres loader, delete-then-insert scoped to the days loaded
+- [x] Signal catalog generated into a dbt seed from the Python catalog
+- [x] dbt: 4 staging models, 6 marts, PII dropped at the staging boundary
+- [x] 42 dbt tests, including 5 singular ones
+- [x] Retention with stated horizons per store, on its own schedule
+- [x] 3 Airflow DAGs, each task shelling into a pinned virtualenv
+- [x] Backfill run twice, row counts diffed
+- [x] 22 new tests (346 total), CI green
+
+| Check | Result |
+| --- | --- |
+| dbt build | 10 models, `PASS=10 ERROR=0` |
+| dbt test | `PASS=42 ERROR=0` |
+| Singular tests vs. corrupted rows | 3 injected faults → exactly 3 failures |
+| DAG parse | 3 DAGs, 0 import errors |
+| `bellwether_daily` end to end | 8 of 8 tasks succeeded |
+| Retention | lake 31 → 22 partitions, audit and scores within horizon |
+| **Same date run twice** | **6 tables, all unchanged** |
+
+`assert_marts_do_not_reband` is the test to read. Band thresholds live in one
+place — `RiskBand.of()` in Python — and the intervention policy, the API and the
+dashboard all depend on that. A mart recomputing the boundary in SQL would make
+the warehouse and the product disagree about who is critical, with both looking
+right in isolation. The five singular tests were checked against deliberately
+corrupted rows rather than assumed to work: a score whose band contradicts it,
+an unpriced signal and a score of 140 fail exactly three of them and nothing
+else.
+
+The Airflow image carries **three virtualenvs**, which is the design rather than
+a workaround: Airflow, PySpark and dbt cannot share dependency pins, so each
+gets its own and the DAGs shell into them. Same isolation a
+KubernetesPodOperator buys, minus the cluster.
 
 ## Day 8 — operability
 
