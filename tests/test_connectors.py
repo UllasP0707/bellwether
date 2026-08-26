@@ -27,6 +27,13 @@ POPULATION_SIZE = 60
 DAYS = 7
 SEED = 1337
 
+# Pinned, and it has to be. The simulator generates a quarter as much activity
+# at weekends, so a window ending at "now" contains a different mix of weekdays
+# every day and generates a different set of signals — which made the coverage
+# assertion below pass or fail depending on the date. A seed is not enough to
+# make a time-windowed generator deterministic.
+FIXTURE_END = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+
 
 @pytest.fixture(scope="module")
 def population() -> list[Employee]:
@@ -40,7 +47,7 @@ def directory(population: list[Employee]) -> EmployeeDirectory:
 
 @pytest.fixture
 def vendor() -> TestClient:
-    store = build_store(size=POPULATION_SIZE, days=DAYS, seed=SEED)
+    store = build_store(size=POPULATION_SIZE, days=DAYS, seed=SEED, end=FIXTURE_END)
     # Rate limiting off by default: each test that cares turns on the specific
     # failure it wants, deterministically, rather than racing a token bucket.
     return TestClient(create_app(store=store, config=VendorConfig(rate_limit_per_second=10**6)))
@@ -398,7 +405,24 @@ def test_signals_reaching_the_pipeline_cover_the_catalog(
 
     unreachable = {s for s, src in SIGNAL_SOURCE.items() if src in UNCONNECTED_SOURCES}
     assert delivered & unreachable == set()
-    assert len(delivered) >= 15, f"only {len(delivered)} signals reach the pipeline"
+
+    # An exact set, not a count over a threshold. The threshold version was
+    # calibrated against whatever a particular day's fixture happened to
+    # produce, so it silently encoded the date it was written on; naming the
+    # signals says what the four connectors actually cover and fails loudly if a
+    # parser stops producing one.
+    #
+    # The four reachable-but-absent signals below are rare enough not to occur
+    # in seven days across sixty employees. That is a property of the fixture
+    # rather than of the connectors, and listing them keeps the difference
+    # between "no connector" and "no occurrence" visible.
+    rare = {
+        SignalType.ADMIN_PRIVILEGE_GRANTED,
+        SignalType.EMAIL_FORWARDING_RULE_CREATED,
+        SignalType.REAL_PHISH_REPORTED,
+        SignalType.STALE_ACCESS_UNREVIEWED,
+    }
+    assert delivered == set(SignalType) - unreachable - rare
 
 
 @pytest.mark.parametrize("name", ALL)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from bellwether.events.schema import BehaviorEvent, Source
@@ -41,17 +42,30 @@ class VendorStore:
         return len(self.records(source))
 
 
-def build_store(size: int = 500, days: int = 30, seed: int = 1337) -> VendorStore:
+def build_store(
+    size: int = 500,
+    days: int = 30,
+    seed: int = 1337,
+    end: datetime | None = None,
+) -> VendorStore:
     """Seed the mock vendor with a population's behaviour history.
 
     Uses the same seed defaults as the rest of the project, so the employee the
     demo talks about is the same employee here.
+
+    `end` exists because a seed alone does not make this deterministic. The
+    simulator generates a quarter as much activity at weekends, so the window's
+    weekday composition changes what gets generated — and a window ending at
+    `now` has a different composition every day. A test asserting anything about
+    the *contents* of this store therefore passes or fails depending on the date
+    it is run, which is how `test_signals_reaching_the_pipeline_cover_the_catalog`
+    came to fail on a Tuesday having passed all week.
     """
     population = build_population(size=size, seed=seed)
     emails = {member.employee.employee_id: member.employee.email or "" for member in population}
 
     simulator = Simulator(population, seed=seed + 1)
-    events: list[BehaviorEvent] = list(simulator.backfill(days=days))
+    events: list[BehaviorEvent] = list(simulator.backfill(days=days, end=end))
     # Vendor arrival order.
     events.sort(key=lambda e: e.ingested_at)
 
