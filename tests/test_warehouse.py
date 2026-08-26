@@ -7,13 +7,15 @@ property of this loader rather than of Airflow.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from bellwether.scoring.catalog import CATALOG
 from bellwether.warehouse import seeds
 from bellwether.warehouse.load import COLUMNS, counts, load
+from bellwether.warehouse.retention import prune_lake
 
 NOW = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 
@@ -55,6 +57,55 @@ def test_the_seed_is_deterministic() -> None:
     assert seeds.render() == seeds.render()
     signals = [line.split(",")[0] for line in seeds.render().splitlines()[1:]]
     assert signals == sorted(signals)
+
+
+# --- retention -----------------------------------------------------------------
+
+
+def make_partition(root: Path, day: date, files: int = 2) -> Path:
+    partition = root / f"dt={day.isoformat()}"
+    partition.mkdir(parents=True)
+    for index in range(files):
+        (partition / f"part-{index}.jsonl").write_text("{}\n")
+    return partition
+
+
+def test_retention_removes_only_what_is_past_the_horizon(tmp_path: Path) -> None:
+    for age in (1, 10, 29, 31, 400):
+        make_partition(tmp_path, (NOW - timedelta(days=age)).date())
+
+    pruned = prune_lake(tmp_path, keep_days=30, now=NOW)
+
+    assert pruned.lake_partitions == 2
+    assert pruned.lake_files == 4
+    remaining = sorted(p.name for p in tmp_path.iterdir())
+    assert len(remaining) == 3
+
+
+def test_retention_leaves_alone_what_it_does_not_understand(tmp_path: Path) -> None:
+    """The failure mode has to be keeping too much, never deleting blindly."""
+    make_partition(tmp_path, (NOW - timedelta(days=400)).date())
+    (tmp_path / "checkpoints").mkdir()
+    (tmp_path / "dt=not-a-date").mkdir()
+
+    pruned = prune_lake(tmp_path, keep_days=30, now=NOW)
+
+    assert pruned.lake_partitions == 1
+    assert sorted(pruned.kept) == ["checkpoints", "dt=not-a-date"]
+    assert (tmp_path / "checkpoints").exists()
+    assert (tmp_path / "dt=not-a-date").exists()
+
+
+def test_retention_on_a_missing_lake_is_not_an_error(tmp_path: Path) -> None:
+    assert prune_lake(tmp_path / "nothing-here", keep_days=30, now=NOW).total == 0
+
+
+def test_retention_is_measured_from_a_given_instant(tmp_path: Path) -> None:
+    """`now` is a parameter so this is testable before it is trusted with data."""
+    make_partition(tmp_path, date(2026, 6, 1))
+
+    assert prune_lake(tmp_path, keep_days=30, now=datetime(2026, 6, 15, tzinfo=UTC)).total == 0
+    assert prune_lake(tmp_path, keep_days=30, now=datetime(2026, 8, 15, tzinfo=UTC)).total == 1
 
 
 # --- the loader ----------------------------------------------------------------

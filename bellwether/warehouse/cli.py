@@ -60,6 +60,51 @@ def load_all(
 
 
 @app.command()
+def retention(
+    lake: Annotated[str, typer.Option(help="Lake root.")] = "data/events",
+    lake_days: Annotated[int, typer.Option(help="Keep lake partitions this long.")] = 30,
+    audit_days: Annotated[int, typer.Option(help="Keep read-audit rows this long.")] = 400,
+    score_days: Annotated[int, typer.Option(help="Keep batch score snapshots this long.")] = 90,
+    dry_run: Annotated[bool, typer.Option(help="Report without deleting.")] = False,
+) -> None:
+    """Enforce the stated retention horizons and report what went."""
+    from bellwether.warehouse.retention import prune_audit, prune_lake, prune_scores
+
+    config = settings()
+    table = Table(title="retention", header_style="bold")
+    table.add_column("store")
+    table.add_column("horizon", justify="right")
+    table.add_column("removed", justify="right")
+
+    if dry_run:
+        console.print("[yellow]dry run[/yellow]: nothing will be deleted")
+        for name, days in (
+            ("lake partitions", lake_days),
+            ("read audit rows", audit_days),
+            ("score snapshots", score_days),
+        ):
+            table.add_row(name, f"{days}d", "-")
+        console.print(table)
+        return
+
+    pruned = prune_lake(lake, keep_days=lake_days)
+    audit_rows = prune_audit(config.postgres_dsn, keep_days=audit_days)
+    score_rows = prune_scores(config.postgres_dsn, keep_days=score_days)
+
+    table.add_row(
+        "lake partitions",
+        f"{lake_days}d",
+        f"{pruned.lake_partitions:,} ({pruned.lake_files:,} files)",
+    )
+    table.add_row("read audit rows", f"{audit_days}d", f"{audit_rows:,}")
+    table.add_row("score snapshots", f"{score_days}d", f"{score_rows:,}")
+    console.print(table)
+
+    if pruned.kept:
+        console.print(f"[dim]left alone (not a dt= partition): {', '.join(pruned.kept[:5])}[/dim]")
+
+
+@app.command()
 def seed() -> None:
     """Regenerate the dbt signal-catalog seed from the Python catalog."""
     path = write()
