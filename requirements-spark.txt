@@ -1,0 +1,10 @@
+# The batch path. Kept out of requirements.txt because installing Spark drags
+# in a JVM dependency that every other component is happy without: the API, the
+# connectors and the stream consumers should stay installable and fast to build
+# without one.
+#
+# Java 17 or 21. Not 23 — PySpark 3.5 does not support it, which is why the
+# batch job runs in a container locally and why CI pins a JDK explicitly rather
+# than taking whatever the runner ships.
+-r requirements.txt
+pyspark>=3.5,<4

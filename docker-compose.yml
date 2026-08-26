@@ -94,6 +94,32 @@ services:
       echo 'lake bucket ready'
       "
 
+  # The batch path. Behind a profile so `docker compose up` does not build a
+  # JVM image to run a stream, and started on demand:
+  #
+  #   docker compose run --rm spark pytest -m spark
+  #   docker compose run --rm spark python -m bellwether.cli batch score
+  #
+  # Java 17, because PySpark 3.5 does not support the 23 that is on this
+  # machine. Containerising the batch job is cheaper than pinning a second JDK
+  # into everyone's shell.
+  spark:
+    profiles: ["batch"]
+    build:
+      context: .
+      dockerfile: docker/spark.Dockerfile
+    volumes:
+      - .:/app
+      # Keep the host's macOS virtualenv out of the container: same path, wrong
+      # platform, and importable enough to cause very confusing failures.
+      - /app/.venv
+    working_dir: /app
+    environment:
+      BELLWETHER_KAFKA_BOOTSTRAP: redpanda:29092
+      BELLWETHER_POSTGRES_DSN: postgresql://bellwether:bellwether@postgres:5432/bellwether
+      BELLWETHER_REDIS_URL: redis://redis:6379/0
+      BELLWETHER_S3_ENDPOINT: http://minio:9000
+
 volumes:
   pgdata:
   miniodata:

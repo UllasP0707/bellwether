@@ -12,6 +12,9 @@ markers = [
     # Needs a reachable Postgres. Skipped when there is none, so the default run
     # stays fast and offline; CI runs a database so they are not optional there.
     "postgres: round-trips against a real database",
+    # Needs PySpark and a JVM (17 or 21). Skipped without one; CI pins a JDK so
+    # the stream/batch parity comparison is never silently absent there.
+    "spark: runs the Spark batch path",
 ]
 
 [tool.ruff]
@@ -26,6 +29,10 @@ ignore = ["B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["SLF001"]
+# `functions as F` is the universal Spark idiom. Renaming it to satisfy a naming
+# rule would make every line of this package read unlike every other Spark
+# codebase, which costs more than the rule is worth.
+"bellwether/batch/*" = ["N812"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -34,5 +41,5 @@ warn_unreachable = true
 # The generator's rng-heavy code and the Kafka client's untyped surface aren't
 # worth fighting the checker over.
 [[tool.mypy.overrides]]
-module = ["confluent_kafka.*", "boto3.*", "botocore.*"]
+module = ["confluent_kafka.*", "boto3.*", "botocore.*", "pyspark.*"]
 ignore_missing_imports = true

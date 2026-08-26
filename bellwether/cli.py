@@ -17,11 +17,16 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from bellwether.batch.cli import app as batch_app
 from bellwether.config import Topics, settings
 from bellwether.generator.cli import app as generator_app
 
 app = typer.Typer(add_completion=False, help="Bellwether: a human-risk platform.")
 app.add_typer(generator_app, name="generate", help="Synthetic population and behaviour.")
+# Importable without PySpark: nothing under `batch` imports it at module scope,
+# so the CLI still starts on a machine with no JVM and only fails if a batch
+# command is actually run.
+app.add_typer(batch_app, name="batch", help="The Spark batch path.")
 console = Console()
 
 
