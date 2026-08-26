@@ -115,7 +115,12 @@ def score(
 
         rows = scored.collect()
         if out:
-            scored.write.mode("overwrite").parquet(out)
+            # `dt` is added here rather than in `score_dataframe` because it is
+            # a storage concern: the warehouse loads and reloads by day, and the
+            # scoring function has no opinion about how its output is filed.
+            from pyspark.sql import functions as F
+
+            scored.withColumn("dt", F.to_date("as_of")).write.mode("overwrite").parquet(out)
 
         console.print(
             f"scored [bold]{len(rows):,}[/bold] of {len(people):,} employees "

@@ -1,0 +1,24 @@
+signal,category,weight,half_life_days,is_mitigating,description
+admin_privilege_granted,access_hygiene,5.0,120.0,false,Received elevated privileges
+bulk_download_detected,data_handling,15.0,30.0,false,Downloaded documents far above this person's own baseline
+credential_in_breach_dump,credential_hygiene,18.0,180.0,false,Credential appeared in a third-party breach
+email_forwarding_rule_created,access_hygiene,16.0,60.0,false,Created an auto-forwarding rule to an external address
+file_shared_externally,data_handling,0.3,14.0,false,Shared a file with a named external address
+file_shared_public_link,data_handling,11.0,30.0,false,"Created a public, unauthenticated link to a corporate document"
+impossible_travel_login,credential_hygiene,9.0,14.0,false,Successful logins from geographically incompatible locations
+intervention_acknowledged,security_engagement,-4.0,30.0,true,Engaged with an intervention Bellwether sent
+intervention_ignored,security_engagement,3.0,30.0,false,Ignored an intervention
+mfa_push_denied,credential_hygiene,0.4,7.0,false,Denied an MFA push
+mfa_push_flood,credential_hygiene,14.0,21.0,false,"Received a burst of MFA pushes, consistent with an active fatigue attack against this account"
+oauth_grant_risky_scope,access_hygiene,12.0,60.0,false,Granted a third-party app broad scopes (mail
+password_reuse_detected,credential_hygiene,10.0,90.0,false,Corporate password observed reused on a non-corporate service
+phish_credentials_submitted,phishing_susceptibility,25.0,45.0,false,Entered credentials into a simulated phishing page
+phish_sim_clicked,phishing_susceptibility,8.0,21.0,false,Clicked a link in a simulated phishing email
+phish_sim_delivered,phishing_susceptibility,0.0,30.0,false,Simulated phishing email delivered
+phish_sim_reported,phishing_susceptibility,-6.0,30.0,true,Reported a simulated phish instead of engaging with it
+real_phish_reported,phishing_susceptibility,-10.0,60.0,true,Reported a genuine phishing attempt
+sensitive_data_to_genai,data_handling,13.0,21.0,false,Pasted content matching a sensitive-data classifier into a third-party AI tool
+stale_access_unreviewed,access_hygiene,6.0,90.0,false,Retains access to systems unused for 90+ days
+training_completed,security_engagement,-7.0,60.0,true,Completed assigned security training
+training_overdue,security_engagement,5.0,30.0,false,Assigned training is past due
+usb_mass_storage_mounted,data_handling,1.2,14.0,false,Mounted removable storage on a managed device

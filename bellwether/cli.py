@@ -20,6 +20,7 @@ from rich.table import Table
 from bellwether.batch.cli import app as batch_app
 from bellwether.config import Topics, settings
 from bellwether.generator.cli import app as generator_app
+from bellwether.warehouse.cli import app as warehouse_app
 
 app = typer.Typer(add_completion=False, help="Bellwether: a human-risk platform.")
 app.add_typer(generator_app, name="generate", help="Synthetic population and behaviour.")
@@ -27,6 +28,7 @@ app.add_typer(generator_app, name="generate", help="Synthetic population and beh
 # so the CLI still starts on a machine with no JVM and only fails if a batch
 # command is actually run.
 app.add_typer(batch_app, name="batch", help="The Spark batch path.")
+app.add_typer(warehouse_app, name="warehouse", help="Land Spark output for dbt.")
 console = Console()
 
 
