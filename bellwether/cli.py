@@ -290,6 +290,7 @@ def score_stream(
     table.add_column("value", justify="right")
     table.add_row("scored", f"[green]{stats.scored:,}[/green]")
     table.add_row("band changes", f"{stats.band_changes:,}")
+    table.add_row("no events in window", f"{stats.empty_window:,}")
     table.add_row(
         "unknown employee",
         f"{stats.unknown_employee:,}"

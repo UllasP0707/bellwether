@@ -30,6 +30,7 @@ from bellwether.stream.store import EventWindow, ScoreState, WindowedEvent
 
 class ScoreOutcome(StrEnum):
     SCORED = "scored"
+    EMPTY_WINDOW = "empty_window"
     UNKNOWN_EMPLOYEE = "unknown_employee"
     MALFORMED = "malformed"
 
@@ -37,6 +38,7 @@ class ScoreOutcome(StrEnum):
 @dataclass
 class ScorerStats:
     scored: int = 0
+    empty_window: int = 0
     unknown_employee: int = 0
     malformed: int = 0
     band_changes: int = 0
@@ -45,7 +47,7 @@ class ScorerStats:
 
     @property
     def total(self) -> int:
-        return self.scored + self.unknown_employee + self.malformed
+        return self.scored + self.empty_window + self.unknown_employee + self.malformed
 
     def percentile(self, p: float, pipeline: bool = False) -> float:
         """Latency percentile in milliseconds, 0.0 if nothing has been scored."""
@@ -92,6 +94,8 @@ class Scorer:
             self.stats.scored += 1
             if decision.band_changed:
                 self.stats.band_changes += 1
+        elif decision.outcome is ScoreOutcome.EMPTY_WINDOW:
+            self.stats.empty_window += 1
         elif decision.outcome is ScoreOutcome.UNKNOWN_EMPLOYEE:
             self.stats.unknown_employee += 1
         else:
@@ -135,6 +139,32 @@ class Scorer:
             as_of=now,
             lookback_days=self.lookback_days,
         )
+
+        if result.events_considered == 0:
+            # The window contributed nothing, which happens when the event that
+            # triggered this rescore is itself older than the lookback — a late
+            # source, or a replay of history.
+            #
+            # Publishing here would say the employee scores zero, and a zero is
+            # indistinguishable from a genuinely clean record. "We have no data
+            # on this person" is a different answer from "this person is doing
+            # fine", and only one of them is true.
+            #
+            # It is also where the two paths diverged. The batch job drops such
+            # employees; the stream used to emit a zero for them, so a live
+            # comparison of the whole population found one employee — a single
+            # event, 33 days old — that stream scored and batch did not.
+            #
+            # Staleness is the obvious objection: somebody whose events all age
+            # out keeps their last score forever. That is already true of any
+            # event-driven scorer, since nothing rescores a person who does
+            # nothing, and it is the daily batch recompute's job rather than
+            # something a lie in the stream can fix.
+            return ScoreDecision(
+                ScoreOutcome.EMPTY_WINDOW,
+                key=event.employee_id.encode(),
+                reason=f"no events within {self.lookback_days}d",
+            )
 
         previous = self.state.band(event.employee_id)
 

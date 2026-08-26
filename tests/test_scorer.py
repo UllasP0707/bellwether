@@ -184,6 +184,33 @@ def test_movement_inside_a_band_is_not_a_crossing() -> None:
 # --- degradation ------------------------------------------------------------
 
 
+def test_an_event_older_than_the_window_publishes_nothing() -> None:
+    """A zero score would claim the employee is clean. We have no data on them.
+
+    Found by comparing the two paths over the whole live population rather than
+    over a fixture: one employee, whose single event was 33 days old, was scored
+    by the stream and dropped by the batch job. The batch job was right.
+    """
+    scorer, _ = build_scorer()
+    decision = scorer.handle(raw_event(occurred_at=NOW - timedelta(days=40)), now=NOW)
+
+    assert decision.outcome is ScoreOutcome.EMPTY_WINDOW
+    assert not decision.publishes
+    assert scorer.stats.empty_window == 1
+    assert scorer.stats.scored == 0
+
+
+def test_a_clean_employee_with_events_is_still_scored() -> None:
+    """Only *absence* of data is silent. Mitigating behaviour is a real answer."""
+    scorer, _ = build_scorer()
+    decision = scorer.handle(raw_event(SignalType.REAL_PHISH_REPORTED), now=NOW)
+
+    message = RiskScoreEvent.model_validate_json(decision.value or b"")
+    assert decision.outcome is ScoreOutcome.SCORED
+    assert message.score == 0.0
+    assert message.events_considered == 1
+
+
 def test_unknown_employee_is_skipped_not_guessed() -> None:
     """Events outlive their subject: people leave, their events keep arriving."""
     scorer, _ = build_scorer()
