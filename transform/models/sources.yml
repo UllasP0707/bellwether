@@ -1,0 +1,35 @@
+version: 2
+
+sources:
+  - name: bellwether
+    description: >
+      Tables the pipeline writes. `employee` and `intervention` are operational
+      tables the services own; the `raw_*` tables are Spark output landed by the
+      warehouse loader.
+    schema: public
+    tables:
+      - name: employee
+        description: The employee dimension. The only place PII lives.
+        columns:
+          - name: employee_id
+            tests: [not_null, unique]
+          - name: department
+            tests: [not_null]
+      - name: intervention
+        description: Every message the system decided to send, and why.
+        columns:
+          - name: intervention_id
+            tests: [not_null, unique]
+      - name: raw_daily_employee_signal
+        description: One row per employee per day per signal, written by Spark.
+        # No freshness block on purpose. This table is loaded by a daily DAG, so
+        # "stale" is a scheduling question the orchestrator already answers, and
+        # a dbt freshness failure would report the same outage a second time
+        # under a less useful name.
+        columns:
+          - name: events
+            tests: [not_null]
+      - name: raw_daily_population_signal
+        description: One row per day per signal across the whole company.
+      - name: raw_employee_score
+        description: Batch-computed scores, one row per employee per run day.

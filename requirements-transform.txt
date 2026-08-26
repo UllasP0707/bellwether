@@ -1,0 +1,15 @@
+# dbt, for the warehouse models.
+#
+# Pinned to the 1.9 line rather than left open. Newer dbt-core pulls
+# `dbt-core-experimental-parser`, whose build step downloads a wheel from
+# GitHub at install time -- which fails on any machine behind a proxy that
+# breaks TLS interception, and is a strange thing to accept in a dependency
+# regardless.
+#
+# Installed into its own virtualenv (`make dbt-install` -> .venv-dbt), not the
+# main one. That is forced rather than tidy-minded: dbt-core pins
+# `pathspec<0.13` and current mypy requires `pathspec>=1.0`, so the two cannot
+# share an environment. Keeping dbt out also means the connectors, the stream
+# consumers and the API stay installable without it.
+dbt-core==1.9.*
+dbt-postgres==1.9.*

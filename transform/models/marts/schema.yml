@@ -1,0 +1,70 @@
+version: 2
+
+models:
+  - name: dim_employee
+    description: The employee dimension for analytics. Pseudonymous by construction.
+    columns:
+      - name: employee_id
+        tests: [not_null, unique]
+      - name: department
+        tests: [not_null]
+
+  - name: fct_employee_daily_risk
+    description: >
+      One row per employee per day. `raw_contribution` is the day's undecayed
+      weighted sum and is additive; it is deliberately not a risk score, because
+      scores saturate over a decayed window and cannot be summed across days.
+    columns:
+      - name: employee_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_employee')
+              field: employee_id
+      - name: dt
+        tests: [not_null]
+      - name: events
+        tests: [not_null]
+
+  - name: mart_department_risk
+    description: Risk by department and day, from the batch scores.
+    columns:
+      - name: department
+        tests: [not_null]
+      - name: headcount
+        description: >
+          From the dimension, not from the scores. Counting only scored
+          employees would make a department nobody has data on look safe.
+        tests: [not_null]
+      - name: mean_score
+        tests: [not_null]
+
+  - name: mart_cohort_risk
+    description: Risk by tenure cohort and seniority — does onboarding work?
+    columns:
+      - name: tenure_cohort
+        tests:
+          - accepted_values:
+              values: ["new", "established", "experienced", "veteran"]
+
+  - name: mart_signal_mix
+    description: >
+      Daily behaviour volume per signal. The series that makes a silently broken
+      connector visible: a source that stops reporting looks exactly like a
+      population that stopped misbehaving.
+    columns:
+      - name: signal
+        tests: [not_null]
+      - name: weight
+        tests: [not_null]
+
+  - name: mart_intervention_activity
+    description: What the system said to people, by day and rung.
+    columns:
+      - name: intervention_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["nudge", "training", "manager_notification"]
+      - name: sent
+        tests: [not_null]

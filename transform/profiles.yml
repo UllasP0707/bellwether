@@ -1,0 +1,15 @@
+# Env-driven so the same profile works from a laptop, the Spark container and
+# Airflow without any of them holding a credential.
+bellwether:
+  target: local
+  outputs:
+    local:
+      type: postgres
+      host: "{{ env_var('BELLWETHER_PG_HOST', 'localhost') }}"
+      port: "{{ env_var('BELLWETHER_PG_PORT', '5433') | int }}"
+      user: "{{ env_var('BELLWETHER_PG_USER', 'bellwether') }}"
+      password: "{{ env_var('BELLWETHER_PG_PASSWORD', 'bellwether') }}"
+      dbname: "{{ env_var('BELLWETHER_PG_DATABASE', 'bellwether') }}"
+      schema: "{{ env_var('BELLWETHER_PG_SCHEMA', 'analytics') }}"
+      threads: 4
+      keepalives_idle: 0

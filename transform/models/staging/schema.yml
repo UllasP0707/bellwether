@@ -1,0 +1,59 @@
+version: 2
+
+models:
+  - name: stg_employee
+    description: The dimension with PII dropped. Nothing downstream can leak a name.
+    columns:
+      - name: employee_id
+        tests: [not_null, unique]
+      - name: tenure_cohort
+        tests:
+          - accepted_values:
+              values: ["new", "established", "experienced", "veteran"]
+      - name: is_high_value_target
+        tests: [not_null]
+
+  - name: stg_daily_signal
+    description: >
+      Daily per-employee signal counts, priced by the catalog. Its grain
+      (tenant, employee, day, signal) is asserted by a singular test rather
+      than by a dbt_utils macro, so this project carries no third-party dbt
+      dependency to keep upgraded for one assertion.
+    columns:
+      - name: signal
+        tests: [not_null]
+      - name: weight
+        description: >
+          Null means a signal reached the warehouse with no catalog entry, which
+          is a scoring bug rather than a modelling one -- it would contribute
+          zero to a score while looking like ordinary data.
+        tests: [not_null]
+      - name: events
+        tests: [not_null]
+
+  - name: stg_employee_score
+    description: Batch scores, carried through unchanged.
+    columns:
+      - name: employee_id
+        tests: [not_null]
+      - name: band
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["low", "moderate", "elevated", "high", "critical"]
+      - name: score
+        tests: [not_null]
+
+  - name: stg_intervention
+    description: Interventions with the message body dropped.
+    columns:
+      - name: intervention_id
+        tests: [not_null, unique]
+      - name: intervention_type
+        tests:
+          - accepted_values:
+              values: ["nudge", "training", "manager_notification"]
+      - name: copy_source
+        tests:
+          - accepted_values:
+              values: ["model", "template"]

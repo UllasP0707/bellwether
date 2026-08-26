@@ -1,0 +1,35 @@
+name: bellwether
+version: "1.0.0"
+config-version: 2
+profile: bellwether
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+seeds:
+  bellwether:
+    # The scoring model, generated from bellwether/scoring/catalog.py rather
+    # than retyped in SQL. A Python test regenerates it and fails if the
+    # committed file has drifted.
+    +schema: staging
+    signal_catalog:
+      +column_types:
+        weight: double precision
+        half_life_days: double precision
+        is_mitigating: boolean
+
+models:
+  bellwether:
+    staging:
+      # Views, because staging does nothing but rename, cast and drop PII.
+      # Materialising it would double the storage to save a rename.
+      +materialized: view
+      +schema: staging
+    marts:
+      # Tables, because these are what a dashboard or a BI tool reads, and a
+      # view over a view over a join is how a dashboard gets slow.
+      +materialized: table
+      +schema: marts
