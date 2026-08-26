@@ -120,6 +120,40 @@ services:
       BELLWETHER_REDIS_URL: redis://redis:6379/0
       BELLWETHER_S3_ENDPOINT: http://minio:9000
 
+  # Orchestration, also behind a profile. Used with `dags test`, which executes
+  # a whole DAG run in one process:
+  #
+  #   docker compose run --rm airflow airflow dags test bellwether_daily 2026-08-25
+  #
+  # There is no webserver or scheduler service. Running a DAG is what proves the
+  # tasks work; a UI proves only that a UI starts, and the two long-lived
+  # processes it needs are a lot of container for that.
+  airflow:
+    profiles: ["orchestration"]
+    build:
+      context: .
+      dockerfile: docker/airflow.Dockerfile
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - .:/opt/bellwether
+      # Host virtualenvs are macOS builds on a Linux container. Same paths,
+      # wrong platform, importable enough to fail confusingly.
+      - /opt/bellwether/.venv
+      - /opt/bellwether/.venv-dbt
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "True"
+      BELLWETHER_KAFKA_BOOTSTRAP: redpanda:29092
+      BELLWETHER_POSTGRES_DSN: postgresql://bellwether:bellwether@postgres:5432/bellwether
+      BELLWETHER_REDIS_URL: redis://redis:6379/0
+      BELLWETHER_S3_ENDPOINT: http://minio:9000
+      # dbt reads these rather than a checked-in credential.
+      BELLWETHER_PG_HOST: postgres
+      BELLWETHER_PG_PORT: "5432"
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["airflow db migrate >/dev/null 2>&1 && airflow dags list"]
+
 volumes:
   pgdata:
   miniodata:

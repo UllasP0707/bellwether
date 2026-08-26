@@ -4,11 +4,17 @@ PIP := $(VENV)/bin/pip
 
 CLI := $(PY) -m bellwether.generator.cli
 
-.PHONY: help install up down logs topics seed backfill backfill-kafka live \
-        demo-incident score consume test lint fmt clean
+.PHONY: help install install-dbt up down logs topics seed backfill backfill-kafka live \
+        demo-incident score consume serve intervene test test-all lint fmt clean \
+        batch parity warehouse dbt dags dag-daily backfill-twice
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+
+install-dbt: ## dbt gets its own venv: dbt-core pins pathspec<0.13, mypy needs >=1.0
+	python3 -m venv $(VENV)-dbt
+	$(VENV)-dbt/bin/pip install --upgrade pip -q
+	$(VENV)-dbt/bin/pip install -r requirements-transform.txt
 
 install: ## Create venv and install dependencies
 	python3 -m venv $(VENV)
@@ -52,8 +58,45 @@ score: ## Score one employee from the local lake (EMPLOYEE=E0042)
 consume: ## Read the raw topic back and verify the round trip
 	$(CLI) consume --topic bellwether.events.raw
 
-test: ## Run tests
-	$(VENV)/bin/pytest -q
+serve: ## Serve the read API and the dashboard on :8800
+	$(PY) -m bellwether.cli serve
+
+intervene: ## Decide interventions from the scores already published
+	$(PY) -m bellwether.cli intervene
+
+batch: ## Spark: lake -> Parquet -> rollups -> scores (in a container, JDK 17)
+	docker compose --profile batch run --rm spark python -m bellwether.cli batch parquet
+	docker compose --profile batch run --rm spark python -m bellwether.cli batch rollup
+	docker compose --profile batch run --rm spark python -m bellwether.cli batch score --out data/parquet/scores
+
+parity: ## The one that matters: stream and batch must agree
+	docker compose --profile batch run --rm --no-deps spark pytest -m spark -v
+
+warehouse: ## Land Spark's Parquet output in Postgres
+	$(PY) -m bellwether.cli warehouse load
+
+dbt: ## Build and test the marts
+	cd transform && DBT_PROFILES_DIR=$$PWD ../$(VENV)-dbt/bin/dbt seed
+	cd transform && DBT_PROFILES_DIR=$$PWD ../$(VENV)-dbt/bin/dbt run
+	cd transform && DBT_PROFILES_DIR=$$PWD ../$(VENV)-dbt/bin/dbt test
+
+dags: ## List the Airflow DAGs and any import errors
+	docker compose --profile orchestration run --rm airflow \
+	  'airflow db migrate >/dev/null 2>&1; airflow dags list; airflow dags list-import-errors'
+
+dag-daily: ## Execute the daily DAG for one date (DATE=2026-08-25)
+	docker compose --profile orchestration run --rm airflow \
+	  'airflow db migrate >/dev/null 2>&1; airflow dags test bellwether_daily $(or $(DATE),2026-08-25)'
+
+backfill-twice: ## Run the daily DAG for the same date twice; row counts must not move
+	./scripts/backfill_twice.sh $(or $(DATE),2026-08-25)
+
+test: ## Run tests (skips the ones needing a JVM)
+	$(VENV)/bin/pytest -q -m "not spark"
+
+test-all: ## Run every test, including the Spark parity comparison
+	$(VENV)/bin/pytest -q -m "not spark"
+	docker compose --profile batch run --rm --no-deps spark pytest -q -m spark
 
 lint: ## Lint and type-check
 	$(VENV)/bin/ruff check bellwether tests
