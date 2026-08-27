@@ -19,6 +19,8 @@ from bellwether.dimension import InMemoryEmployeeRepository
 from bellwether.events.schema import Employee, RiskCategory, SignalType
 from bellwether.events.scores import FactorPayload, RiskScoreEvent
 from bellwether.interventions import (
+    CachedCopywriter,
+    ChatCompletionsCopywriter,
     ClaudeCopywriter,
     CopyBrief,
     Copydesk,
@@ -629,3 +631,203 @@ def test_the_manager_message_is_addressed_to_the_manager() -> None:
     assert "Dana" in draft.body
     assert "your team" in draft.body
     assert "phishing susceptibility" in draft.body, "the enum value would trip a guardrail"
+
+
+# --- the chat-completions writer ----------------------------------------------
+
+
+class FakeHTTP:
+    """A stand-in for `httpx.Client` that records the request it was given."""
+
+    def __init__(self, payload: object = None, status: int = 200, raises: Exception | None = None):
+        self.payload = payload
+        self.status = status
+        self.raises = raises
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def post(self, url: str, json: dict[str, object]) -> FakeHTTP:
+        self.calls.append((url, json))
+        if self.raises is not None:
+            raise self.raises
+        return self
+
+    def raise_for_status(self) -> None:
+        if self.status >= 400:
+            raise RuntimeError(f"HTTP {self.status}")
+
+    def json(self) -> object:
+        return self.payload
+
+
+def completion(content: str, finish: str = "stop") -> dict[str, object]:
+    return {"choices": [{"finish_reason": finish, "message": {"content": content}}]}
+
+
+def chat_writer(http: FakeHTTP) -> ChatCompletionsCopywriter:
+    return ChatCompletionsCopywriter(
+        base_url="https://gateway.example/api/v1", api_key="k", model="some/model", client=http
+    )
+
+
+BRIEF = CopyBrief(
+    first_name="Dana",
+    type=InterventionType.NUDGE,
+    band=RiskBand.HIGH,
+    dominant_category=RiskCategory.PHISHING_SUSCEPTIBILITY,
+)
+
+
+def test_the_chat_writer_parses_a_well_formed_completion() -> None:
+    http = FakeHTTP(completion('{"subject": "A quick check", "body": "Hi Dana, all fine."}'))
+    draft = chat_writer(http).write(BRIEF)
+
+    assert draft.source is CopySource.MODEL
+    assert draft.subject == "A quick check"
+    url, body = http.calls[0]
+    assert url == "https://gateway.example/api/v1/chat/completions"
+    assert body["model"] == "some/model"
+
+
+def test_both_model_writers_send_the_same_prompt() -> None:
+    """A provider swap must not change what leaves the process.
+
+    The brief is the PII boundary, and it would be a weak one if each writer
+    got to reformat it on the way out.
+    """
+    assert chat_writer(FakeHTTP()).prompt(BRIEF) == ClaudeCopywriter(client=object()).prompt(BRIEF)
+
+
+def test_a_reasoning_model_that_returns_no_content_falls_back() -> None:
+    """The failure mode specific to this class of model.
+
+    The token budget covers the reasoning as well as the answer, so a model can
+    spend all of it thinking and return an empty string with `finish_reason:
+    length`. That is not an empty email — it is a generation failure, and it
+    has to reach the template path rather than the employee.
+    """
+    writer = chat_writer(FakeHTTP(completion("", finish="length")))
+    with pytest.raises(CopyUnavailableError, match="empty content"):
+        writer.write(BRIEF)
+
+    desk = Copydesk(model=writer)
+    draft, _ = desk.compose(BRIEF)
+    assert draft.source is CopySource.TEMPLATE
+    assert desk.stats.model_errors == 1
+
+
+def test_the_prompt_now_carries_no_name_at_all() -> None:
+    """Stronger than "only a first name", and it costs nothing.
+
+    The model writes to a placeholder and the desk substitutes afterwards, so
+    there is no personal data in the request at all — not a token, not a
+    surname, not a given name.
+    """
+    rendered = chat_writer(FakeHTTP()).prompt(BRIEF)
+
+    assert "Dana" not in rendered
+    assert "phishing susceptibility" in rendered, "the human label, not the enum"
+
+
+def test_the_desk_substitutes_the_name_before_validating() -> None:
+    """The guardrails must see the exact bytes the employee will.
+
+    Rendering after validation would mean the one piece of personal data in
+    the message is the one piece nothing checked.
+    """
+    http = FakeHTTP(
+        completion(
+            '{"subject": "A quick check", "body": "Hi {name}, please review your '
+            'recent shares and remove any public links you no longer need today."}'
+        )
+    )
+    desk = Copydesk(model=chat_writer(http))
+    draft, rejections = desk.compose(BRIEF)
+
+    assert draft.body.startswith("Hi Dana,")
+    assert "{name}" not in draft.body
+    assert (rejections, desk.stats.model_drafts) == (0, 1)
+
+
+def test_the_cache_generates_once_per_shape_then_reuses() -> None:
+    """The property that makes a 27-second call survivable in a consumer loop."""
+    http = FakeHTTP(
+        completion(
+            '{"subject": "A quick check", "body": "Hi {name}, please review your shares '
+            'and remove any public links you no longer need this week."}'
+        )
+    )
+    cache = CachedCopywriter(chat_writer(http), variants=2)
+
+    for name in ("Dana", "Sam", "Priya", "Wei"):
+        cache.write(
+            CopyBrief(
+                first_name=name,
+                type=BRIEF.type,
+                band=BRIEF.band,
+                dominant_category=BRIEF.dominant_category,
+            )
+        )
+
+    assert len(http.calls) == 2, "four employees, one shape, two variants"
+    assert (cache.generated, cache.reused, cache.shapes) == (2, 2, 1)
+
+
+def test_a_different_shape_is_a_different_cache_entry() -> None:
+    http = FakeHTTP(
+        completion(
+            '{"subject": "A quick check", "body": "Hi {name}, please review your shares '
+            'and remove any public links you no longer need this week."}'
+        )
+    )
+    cache = CachedCopywriter(chat_writer(http), variants=1)
+    cache.write(BRIEF)
+    cache.write(
+        CopyBrief(
+            first_name="Sam",
+            type=InterventionType.TRAINING,
+            band=BRIEF.band,
+            dominant_category=BRIEF.dominant_category,
+        )
+    )
+
+    assert cache.shapes == 2
+    assert len(http.calls) == 2
+
+
+def test_a_draft_that_fails_validation_is_never_cached() -> None:
+    """One bad generation must not become a permanently dead cache slot."""
+    http = FakeHTTP(
+        completion(
+            '{"subject": "You failed a phishing test", "body": "Hi {name}, your account '
+            'has been compromised because you were careless with an email today."}'
+        )
+    )
+    cache = CachedCopywriter(chat_writer(http), variants=2)
+
+    with pytest.raises(CopyUnavailableError, match="not cached"):
+        cache.write(BRIEF)
+    assert (cache.generated, cache.shapes) == (0, 1)
+
+    desk = Copydesk(model=cache)
+    draft, _ = desk.compose(BRIEF)
+    assert draft.source is CopySource.TEMPLATE
+
+
+@pytest.mark.parametrize(
+    ("http", "why"),
+    [
+        (FakeHTTP(status=429), "rate limited"),
+        (FakeHTTP(raises=TimeoutError("timed out")), "the gateway hung"),
+        (FakeHTTP({"choices": []}), "no choices at all"),
+        (FakeHTTP(completion("not json")), "unparseable body"),
+    ],
+)
+def test_every_gateway_failure_is_recoverable(http: FakeHTTP, why: str) -> None:
+    """One exception type out, so the desk has exactly one thing to catch.
+
+    A writer that raised `httpx.HTTPStatusError` for one failure and
+    `KeyError` for another would eventually raise a third that nobody caught,
+    and that exception would crash a consumer over a badly worded email.
+    """
+    with pytest.raises(CopyUnavailableError):
+        chat_writer(http).write(BRIEF)

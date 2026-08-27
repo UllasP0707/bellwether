@@ -24,7 +24,8 @@ from pydantic import ValidationError
 from bellwether.dimension import EmployeeRepository
 from bellwether.events.schema import BehaviorEvent
 from bellwether.events.scores import RiskScoreEvent
-from bellwether.scoring import score_events
+from bellwether.obs import metrics
+from bellwether.scoring import RiskBand, score_events
 from bellwether.stream.store import EventWindow, ScoreState, WindowedEvent
 
 
@@ -172,6 +173,8 @@ class Scorer:
         pipeline_latency_ms = (now - event.ingested_at).total_seconds() * 1000.0
         self.stats.event_latencies_ms.append(event_latency_ms)
         self.stats.pipeline_latencies_ms.append(pipeline_latency_ms)
+        metrics.score_latency_seconds.labels(kind="ingest").observe(pipeline_latency_ms / 1000.0)
+        metrics.score_latency_seconds.labels(kind="behaviour").observe(event_latency_ms / 1000.0)
 
         message = RiskScoreEvent.from_risk_score(
             result,
@@ -182,6 +185,14 @@ class Scorer:
             event_latency_ms=event_latency_ms,
             pipeline_latency_ms=pipeline_latency_ms,
         )
+
+        if message.band_changed and previous is not None:
+            # Direction, not just "changed". A population drifting downward is
+            # the intervention engine working; a population drifting upward at
+            # the same rate is an incident, and one counter cannot tell them
+            # apart.
+            rose = list(RiskBand).index(message.band) > list(RiskBand).index(previous)
+            metrics.band_transitions.labels(direction="up" if rose else "down").inc()
 
         # Recorded after the message is built, not before, so the projection the
         # API serves is byte-identical to the one on the topic. Writing the band

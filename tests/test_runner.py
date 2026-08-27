@@ -30,14 +30,18 @@ class Decision:
 
 
 class FakeMessage:
-    def __init__(self, value: bytes) -> None:
+    def __init__(self, value: bytes, headers: list[tuple[str, bytes | None]] | None = None) -> None:
         self._value = value
+        self._headers = headers
 
     def error(self) -> None:
         return None
 
     def value(self) -> bytes:
         return self._value
+
+    def headers(self) -> list[tuple[str, bytes | None]] | None:
+        return self._headers
 
 
 @dataclass
@@ -49,6 +53,9 @@ class FakeConsumer:
 
     def subscribe(self, topics: list[str]) -> None:
         self.subscribed = topics
+
+    def assignment(self) -> list[object]:
+        return []
 
     def poll(self, timeout: float) -> FakeMessage | None:
         if not self.messages:

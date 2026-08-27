@@ -3,6 +3,13 @@
 Deliberately thin, and shared. Every stage is a handler that takes bytes and
 returns a decision; this file moves messages, routes what a decision wants
 published, and manages offsets. Nothing here knows what a risk score is.
+
+**It is also the only place any stage is instrumented.** That is a consequence
+of the shape rather than a separate decision: a handler already reports what it
+decided, so counting outcomes, timing the handler and continuing the trace can
+all happen once here instead of three times in three stages that would drift
+apart. Consumer lag has to live here regardless — it is the one number no
+handler can compute, because only the broker knows where the end of the log is.
 """
 
 from __future__ import annotations
@@ -14,11 +21,18 @@ from typing import TYPE_CHECKING, Protocol
 
 from bellwether.config import Topics, settings
 from bellwether.interventions.handler import InterventionStage, InterventionStats
+from bellwether.obs import metrics, tracing
 from bellwether.stream.normalizer import Normalizer, NormalizerStats, Outcome
 from bellwether.stream.scorer import Scorer, ScorerStats
 
 if TYPE_CHECKING:  # pragma: no cover
-    from confluent_kafka import Consumer, Producer
+    from confluent_kafka import Consumer, Message, Producer
+
+# How often to ask the broker where the end of each partition is. Lag is a
+# gauge nobody reads between scrapes, and `get_watermark_offsets` is a network
+# round trip per partition, so doing it per message would make the metric more
+# expensive than the work it measures.
+LAG_INTERVAL_SECONDS = 5.0
 
 
 class StageDecision(Protocol):
@@ -87,6 +101,45 @@ def _producer(bootstrap: str) -> Producer:
     )
 
 
+def _report_lag(consumer: Consumer, stage: str) -> None:
+    """Publish `high watermark - position` for every partition this member owns.
+
+    Best-effort by design. Lag is a diagnostic, and a broker that is slow to
+    answer a metadata call must not take down the consumer that was asking —
+    the stage failing because its monitoring failed is strictly worse than
+    having no monitoring.
+    """
+    try:
+        assignment = consumer.assignment()
+        if not assignment:
+            return
+        for partition in consumer.position(assignment):
+            if partition.offset < 0:
+                continue
+            _, high = consumer.get_watermark_offsets(partition, timeout=1.0, cached=True)
+            metrics.consumer_lag.labels(
+                stage=stage, topic=partition.topic, partition=str(partition.partition)
+            ).set(max(0, high - partition.offset))
+    except Exception:  # pragma: no cover - a broker hiccup is not a stage failure
+        return
+
+
+def _headers(message: Message) -> list[tuple[str, bytes | None]]:
+    """Kafka headers as a list of pairs, whatever shape the client hands back.
+
+    `confluent_kafka` types `headers()` as a dict *or* a list of pairs, and
+    duplicate keys are legal on the wire, so the list is the honest form.
+    """
+    raw = message.headers()
+    if raw is None:
+        return []
+    pairs = raw.items() if isinstance(raw, dict) else raw
+    return [
+        (key, value if value is None or isinstance(value, bytes) else str(value).encode())
+        for key, value in pairs
+    ]
+
+
 def run_stage(
     source_topic: str,
     handle: Callable[[bytes], StageDecision],
@@ -94,6 +147,7 @@ def run_stage(
     bootstrap: str | None = None,
     options: RunnerOptions | None = None,
     processed: Callable[[], int] | None = None,
+    stage: str = "stage",
 ) -> None:
     """Consume, hand each message to `handle`, publish, commit.
 
@@ -112,6 +166,7 @@ def run_stage(
 
     since_commit = 0
     last_message_at = time.monotonic()
+    last_lag_at = 0.0
 
     def commit() -> None:
         """Flush produced messages before acknowledging their inputs.
@@ -134,12 +189,18 @@ def run_stage(
             return
         producer.flush(30)
         consumer.commit(asynchronous=False)
+        metrics.stage_commits.labels(stage=stage).inc()
         since_commit = 0
 
     try:
         while True:
             if options.max_messages and processed and processed() >= options.max_messages:
                 break
+
+            now = time.monotonic()
+            if now - last_lag_at > LAG_INTERVAL_SECONDS:
+                _report_lag(consumer, stage)
+                last_lag_at = now
 
             message = consumer.poll(0.5)
             if message is None:
@@ -158,18 +219,38 @@ def run_stage(
             if payload is None:
                 continue
 
-            decision = handle(payload)
-            if decision.publishes:
-                # The reason rides as a header rather than in the body so a
-                # dead letter stays byte-identical to what arrived — the point
-                # of keeping it is to be able to replay the original.
-                headers: list[tuple[str, str | bytes | None]] | None = (
-                    [("reason", (decision.reason or "").encode())] if decision.reason else None
-                )
-                producer.produce(
-                    route(decision), key=decision.key, value=decision.value, headers=headers
-                )
-                producer.poll(0)
+            # The span continues whatever trace produced this message rather
+            # than starting a new one, which is what makes a connector fetch
+            # and the intervention it eventually causes the same trace across
+            # three topics and four processes.
+            with tracing.message_span(
+                f"{stage} handle", headers=_headers(message), topic=source_topic
+            ) as span:
+                with metrics.timed(metrics.stage_handle_seconds, stage=stage):
+                    decision = handle(payload)
+
+                outcome = str(getattr(decision, "outcome", "handled"))
+                metrics.stage_messages.labels(stage=stage, outcome=outcome).inc()
+                span.set_attribute("bellwether.outcome", outcome)
+                if decision.reason:
+                    span.set_attribute("bellwether.reason", decision.reason)
+
+                if decision.publishes:
+                    target = route(decision)
+                    # The reason rides as a header rather than in the body so a
+                    # dead letter stays byte-identical to what arrived — the
+                    # point of keeping it is to be able to replay the original.
+                    # `traceparent` rides alongside it for the same reason: the
+                    # payload is a contract, and threading a trace id through
+                    # it would make observability a schema change.
+                    outgoing: list[tuple[str, str | bytes | None]] = list(tracing.inject())
+                    if decision.reason:
+                        outgoing.append(("reason", decision.reason.encode()))
+                    producer.produce(
+                        target, key=decision.key, value=decision.value, headers=outgoing or None
+                    )
+                    producer.poll(0)
+                    metrics.stage_published.labels(stage=stage, topic=target).inc()
 
             since_commit += 1
             if since_commit >= options.commit_every:
@@ -201,6 +282,7 @@ def run_normalizer(
         bootstrap=bootstrap,
         options=options or RunnerOptions(group_id="bellwether-normalizer"),
         processed=lambda: normalizer.stats.total,
+        stage="normalizer",
     )
     return normalizer.stats
 
@@ -220,6 +302,7 @@ def run_scorer(
         bootstrap=bootstrap,
         options=options or RunnerOptions(group_id="bellwether-scorer"),
         processed=lambda: scorer.stats.total,
+        stage="scorer",
     )
     return scorer.stats
 
@@ -246,5 +329,6 @@ def run_interventions(
         bootstrap=bootstrap,
         options=options or RunnerOptions(group_id="bellwether-interventions", commit_every=1),
         processed=lambda: stage.stats.total,
+        stage="intervention",
     )
     return stage.stats
