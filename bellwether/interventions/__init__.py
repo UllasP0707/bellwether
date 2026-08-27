@@ -6,12 +6,16 @@ concerned with *not* acting.
 """
 
 from bellwether.interventions.copy import (
+    CachedCopywriter,
+    ChatCompletionsCopywriter,
     ClaudeCopywriter,
     CopyBrief,
     Copydesk,
     CopyUnavailableError,
     Draft,
     TemplateCopywriter,
+    copywriter,
+    render,
 )
 from bellwether.interventions.decide import TRIGGER_SIGNALS, Decider, Trigger, Verdict
 from bellwether.interventions.guardrails import Guardrails, Violation
@@ -38,7 +42,9 @@ from bellwether.interventions.types import (
 
 __all__ = [
     "TRIGGER_SIGNALS",
+    "CachedCopywriter",
     "Channel",
+    "ChatCompletionsCopywriter",
     "ClaudeCopywriter",
     "CopyBrief",
     "CopySource",
@@ -63,4 +69,6 @@ __all__ = [
     "Violation",
     "band_rose",
     "cooldown_active",
+    "copywriter",
+    "render",
 ]

@@ -394,7 +394,9 @@ def intervene(
     max_messages: Annotated[int | None, typer.Option(help="Stop after N messages.")] = None,
     group: Annotated[str, typer.Option(help="Consumer group id.")] = "bellwether-interventions",
     ledger: Annotated[str, typer.Option(help="Ledger: postgres or memory.")] = "postgres",
-    copy: Annotated[str, typer.Option(help="Copy source: auto, template, or model.")] = "auto",
+    copy: Annotated[
+        str, typer.Option(help="Copy writer: auto, chat, anthropic, or template.")
+    ] = "auto",
     max_trigger_age_hours: Annotated[
         int, typer.Option(help="How old the triggering behaviour may be.")
     ] = 48,
@@ -415,18 +417,16 @@ def intervene(
     delivery worker consuming it is what would actually reach a person, and it
     is deliberately not part of this repo.
     """
-    import os
-
     from bellwether.dimension import PostgresEmployeeRepository
     from bellwether.interventions import (
-        ClaudeCopywriter,
+        CachedCopywriter,
         Copydesk,
         InMemoryLedger,
         InterventionLedger,
         Policy,
         PostgresLedger,
+        copywriter,
     )
-    from bellwether.interventions.copy import Copywriter
     from bellwether.interventions.handler import InterventionStage
     from bellwether.stream.runner import RunnerOptions, run_interventions
 
@@ -439,15 +439,10 @@ def intervene(
         PostgresLedger(config.postgres_dsn) if ledger == "postgres" else InMemoryLedger()
     )
 
-    # `auto` uses the model when a key is present and the templates otherwise.
-    # Unset credentials are a configuration state, not an error: the static path
-    # is a supported way to run this, not a degraded one.
-    writer: Copywriter | None = None
-    if copy in {"auto", "model"}:
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            writer = ClaudeCopywriter()
-        elif copy == "model":
-            raise typer.BadParameter("--copy model needs ANTHROPIC_API_KEY set")
+    try:
+        writer, copy_description = copywriter(copy)
+    except ValueError as err:
+        raise typer.BadParameter(str(err)) from err
 
     policy = Policy(
         max_trigger_age_hours=max_trigger_age_hours,
@@ -461,7 +456,7 @@ def intervene(
 
     console.print(
         f"deciding {Topics.SCORES} -> {Topics.INTERVENTIONS} "
-        f"(copy: {'claude + guardrails' if writer else 'templates'}, "
+        f"(copy: {copy_description}, "
         f"trigger age {max_trigger_age_hours}h, cooldown {cooldown_hours}h, "
         f"spacing {min_spacing_hours}h, cap {weekly_cap}/week, "
         f"manager rung {'on' if allow_manager else 'off'})"
@@ -500,6 +495,19 @@ def intervene(
         f"{copy_stats.guardrail_rejections:,} rejected by guardrails, "
         f"{copy_stats.model_errors:,} generation failures"
     )
+    if copy_stats.error_kinds:
+        # Named rather than totalled. An exhausted quota and a model writing
+        # unacceptable copy both end as "fell back to a template", and they
+        # have nothing in common from an operator's point of view.
+        kinds = ", ".join(f"{k} x{n}" for k, n in sorted(copy_stats.error_kinds.items()))
+        console.print(f"[dim]  failures:[/dim] {kinds}")
+    if isinstance(writer, CachedCopywriter):
+        total = writer.generated + writer.reused
+        hit_rate = writer.reused / total if total else 0.0
+        console.print(
+            f"[dim]  cache:[/dim] {writer.generated:,} generated across {writer.shapes:,} "
+            f"brief shapes, {writer.reused:,} reused ({hit_rate:.0%} hit rate)"
+        )
     if copy_stats.rejected_rules:
         broken = ", ".join(f"{r} x{n}" for r, n in sorted(copy_stats.rejected_rules.items()))
         console.print(f"[yellow]guardrails caught:[/yellow] {broken}")

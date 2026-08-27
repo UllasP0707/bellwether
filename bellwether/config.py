@@ -50,6 +50,30 @@ class Settings(BaseSettings):
     # both the streaming window and the batch scan.
     score_lookback_days: int = Field(default=30, ge=1, le=365)
 
+    # Intervention copy. The writer is a plug: `auto` picks whichever
+    # credential is present and falls back to static templates when neither is,
+    # which is a supported way to run this rather than a degraded one.
+    #
+    # `chat` is any OpenAI-compatible /chat/completions endpoint — OpenRouter,
+    # vLLM, Ollama, a gateway. Naming the protocol rather than the vendor is
+    # the point: which model writes the copy is a deployment decision, and the
+    # guardrails downstream do not care and must not.
+    copy_provider: str = "auto"  # auto | chat | anthropic | template
+    copy_base_url: str = "https://openrouter.ai/api/v1"
+    copy_model: str = ""
+    copy_api_key: str = ""
+    # Generous next to the rest of the pipeline, because a reasoning model
+    # spends most of its time before emitting a token. Affordable only because
+    # drafts are cached by brief shape: a timeout this long in front of a call
+    # made once per message would put the whole partition behind one email.
+    copy_timeout_seconds: float = Field(default=45.0, gt=0)
+
+    # Observability. Both are opt-in: with no endpoint set, tracing installs
+    # nothing, and with no port set, no stage opens a socket. Monitoring that
+    # can stop a stage from starting is worse than no monitoring.
+    otlp_endpoint: str = ""
+    metrics_port: int = 0
+
 
 @lru_cache
 def settings() -> Settings:
