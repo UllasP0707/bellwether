@@ -13,7 +13,13 @@ structlog>=24.1,<26
 pyarrow>=17.0
 boto3>=1.35,<2
 httpx>=0.27,<1
-# Intervention copy. Optional at runtime: with no ANTHROPIC_API_KEY set the
+# Intervention copy. Optional at runtime: with no credential configured the
 # copy desk uses static templates, which is a supported configuration rather
-# than a degraded one.
+# than a degraded one. The OpenAI-compatible writer needs only httpx, above.
 anthropic>=0.40,<1
+# Observability. The OTLP exporter is inert without an endpoint configured, so
+# nothing here requires a collector to be running.
+prometheus-client>=0.20,<1
+opentelemetry-api>=1.25,<2
+opentelemetry-sdk>=1.25,<2
+opentelemetry-exporter-otlp-proto-http>=1.25,<2
