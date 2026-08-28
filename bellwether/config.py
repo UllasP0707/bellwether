@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     otlp_endpoint: str = ""
     metrics_port: int = 0
 
+    # Field-level tokenization. One secret, one derived key per tenant, so
+    # adding a tenant needs no new configuration and no tenant's tokens can be
+    # computed from another's. Destroying a key is the only erasure that
+    # reaches a Parquet file or a Kafka segment.
+    tokenization_secret: str = ""
+
 
 @lru_cache
 def settings() -> Settings:

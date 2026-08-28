@@ -8,11 +8,17 @@ attributes that nothing had persisted. Both now read this.
 Lookups are served from an in-process snapshot rather than a query per event. A
 scorer consulting Postgres once per message would put a network round trip in
 the hot path to answer a question whose answer changes about as often as
-someone changes jobs. The cost is staleness bounded by `refresh()`.
+someone changes jobs.
+
+The cost is staleness, and it is bounded on purpose. That bound is a privacy
+property rather than a performance one: a person erased from the database is
+still resident in every process holding a snapshot, so the snapshot expires --
+see `STALE_AFTER_SECONDS`.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Protocol
 
 from bellwether.events.schema import Employee
@@ -100,14 +106,37 @@ class InMemoryEmployeeRepository:
         return len(self._by_id)
 
 
-class PostgresEmployeeRepository:
-    """Postgres-backed, read through an in-process snapshot."""
+# How long the in-process snapshot may be stale.
+#
+# This number is a privacy bound, not a performance tuning knob. The dimension
+# is cached because the scorer reads it once per message and a query per
+# message would be most of the latency budget — but caching it means a person
+# erased from the database is still resident in every running process, and the
+# first live erasure proved it: the row was gone, the score was gone, and the
+# API still held the name.
+#
+# So the snapshot expires. Erasure is not instantaneous, it is complete within
+# this window, and the honest thing is to state the bound rather than to claim
+# a delete that some processes have not seen.
+STALE_AFTER_SECONDS = 300.0
 
-    def __init__(self, dsn: str, tenant_id: str | None = None, load: bool = True) -> None:
+
+class PostgresEmployeeRepository:
+    """Postgres-backed, read through an in-process snapshot that expires."""
+
+    def __init__(
+        self,
+        dsn: str,
+        tenant_id: str | None = None,
+        load: bool = True,
+        stale_after_seconds: float | None = STALE_AFTER_SECONDS,
+    ) -> None:
         import psycopg
 
         self._connection = psycopg.connect(dsn, autocommit=True)
         self.tenant_id = tenant_id
+        self.stale_after_seconds = stale_after_seconds
+        self._loaded_at = 0.0
         with self._connection.cursor() as cur:
             cur.execute(DDL)
         self._snapshot = InMemoryEmployeeRepository()
@@ -130,7 +159,28 @@ class PostgresEmployeeRepository:
         for row in rows:
             snapshot.add(Employee(**dict(zip(_COLUMNS, row, strict=True))))
         self._snapshot = snapshot
+        self._loaded_at = time.monotonic()
         return len(snapshot)
+
+    def _fresh(self) -> InMemoryEmployeeRepository:
+        """The snapshot, reloaded if it has expired.
+
+        A monotonic comparison per read, which is tens of nanoseconds against
+        a per-message budget measured in milliseconds. `monotonic` rather than
+        wall time so an NTP correction cannot make the cache look fresh for an
+        hour.
+
+        `None` disables expiry; `0` refreshes on every read. Those were both
+        spelled `0` for about ten minutes, and the falsy check meant the test
+        asking for "always fresh" silently got "never refresh" — the exact
+        failure this whole mechanism exists to prevent, in the mechanism
+        itself.
+        """
+        if self.stale_after_seconds is None:
+            return self._snapshot
+        if time.monotonic() - self._loaded_at >= self.stale_after_seconds:
+            self.refresh()
+        return self._snapshot
 
     def upsert_many(self, employees: list[Employee]) -> int:
         """Insert or update, then refresh the snapshot.
@@ -152,16 +202,16 @@ class PostgresEmployeeRepository:
         return self.refresh()
 
     def get(self, employee_id: str) -> Employee | None:
-        return self._snapshot.get(employee_id)
+        return self._fresh().get(employee_id)
 
     def resolve_email(self, email: str) -> str | None:
-        return self._snapshot.resolve_email(email)
+        return self._fresh().resolve_email(email)
 
     def all(self) -> list[Employee]:
-        return self._snapshot.all()
+        return self._fresh().all()
 
     def __len__(self) -> int:
-        return len(self._snapshot)
+        return len(self._fresh())
 
     def close(self) -> None:
         self._connection.close()

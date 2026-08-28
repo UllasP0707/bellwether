@@ -23,6 +23,7 @@ from bellwether.generator.cli import app as generator_app
 from bellwether.loadtest.cli import app as load_app
 from bellwether.obs.cli import app as quality_app
 from bellwether.obs.startup import start
+from bellwether.privacy.cli import app as privacy_app
 from bellwether.warehouse.cli import app as warehouse_app
 
 app = typer.Typer(add_completion=False, help="Bellwether: a human-risk platform.")
@@ -34,6 +35,7 @@ app.add_typer(batch_app, name="batch", help="The Spark batch path.")
 app.add_typer(warehouse_app, name="warehouse", help="Land Spark output for dbt.")
 app.add_typer(quality_app, name="quality", help="Data contracts over the warehouse.")
 app.add_typer(load_app, name="load", help="Load test: where this breaks.")
+app.add_typer(privacy_app, name="privacy", help="Erasure and tokenization.")
 console = Console()
 
 
