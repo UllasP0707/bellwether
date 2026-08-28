@@ -121,3 +121,6 @@ trace-demo: ## One incident, traced end to end across three topics
 
 contracts: ## Run the data-quality contracts for a day (DATE=2026-08-14)
 	$(PY) -m bellwether.cli quality check --as-of $(or $(DATE),2026-08-14)
+
+loadtest: ## Where this breaks, and what breaks first (docs/LOAD_TEST.md)
+	$(PY) -m bellwether.cli load all

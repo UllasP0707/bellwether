@@ -20,6 +20,7 @@ from rich.table import Table
 from bellwether.batch.cli import app as batch_app
 from bellwether.config import Topics, settings
 from bellwether.generator.cli import app as generator_app
+from bellwether.loadtest.cli import app as load_app
 from bellwether.obs.cli import app as quality_app
 from bellwether.obs.startup import start
 from bellwether.warehouse.cli import app as warehouse_app
@@ -32,6 +33,7 @@ app.add_typer(generator_app, name="generate", help="Synthetic population and beh
 app.add_typer(batch_app, name="batch", help="The Spark batch path.")
 app.add_typer(warehouse_app, name="warehouse", help="Land Spark output for dbt.")
 app.add_typer(quality_app, name="quality", help="Data contracts over the warehouse.")
+app.add_typer(load_app, name="load", help="Load test: where this breaks.")
 console = Console()
 
 
@@ -306,6 +308,8 @@ def score_stream(
     table.add_row("scored", f"[green]{stats.scored:,}[/green]")
     table.add_row("band changes", f"{stats.band_changes:,}")
     table.add_row("no events in window", f"{stats.empty_window:,}")
+    if stats.future_dated:
+        table.add_row("dated ahead of the clock", f"[yellow]{stats.future_dated:,}[/yellow]")
     table.add_row(
         "unknown employee",
         f"{stats.unknown_employee:,}"

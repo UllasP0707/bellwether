@@ -43,6 +43,8 @@ class ScorerStats:
     unknown_employee: int = 0
     malformed: int = 0
     band_changes: int = 0
+    future_dated: int = 0
+    """Events dated ahead of the clock. Never nothing: skew, or a fabricated timestamp."""
     event_latencies_ms: list[float] = field(default_factory=list)
     pipeline_latencies_ms: list[float] = field(default_factory=list)
 
@@ -173,8 +175,27 @@ class Scorer:
         pipeline_latency_ms = (now - event.ingested_at).total_seconds() * 1000.0
         self.stats.event_latencies_ms.append(event_latency_ms)
         self.stats.pipeline_latencies_ms.append(pipeline_latency_ms)
-        metrics.score_latency_seconds.labels(kind="ingest").observe(pipeline_latency_ms / 1000.0)
-        metrics.score_latency_seconds.labels(kind="behaviour").observe(event_latency_ms / 1000.0)
+
+        # A negative latency means the event is dated ahead of this machine's
+        # clock. It is never nothing: either a source's clock is skewed, or
+        # something upstream is fabricating timestamps. The load test found the
+        # second — the accelerated simulator emits a phishing chain whose later
+        # steps are dated up to ninety minutes out — and the symptom was a p50
+        # of *minus twenty-four seconds*.
+        #
+        # Counted and clamped rather than dropped. Dropping would quietly
+        # shrink the denominator of the SLO; leaving it raw puts negative
+        # observations in a histogram whose first bucket starts at zero, so
+        # they vanish into it and the SLO silently reads better than it is.
+        if pipeline_latency_ms < 0 or event_latency_ms < 0:
+            self.stats.future_dated += 1
+            metrics.future_dated_events.inc()
+        metrics.score_latency_seconds.labels(kind="ingest").observe(
+            max(0.0, pipeline_latency_ms) / 1000.0
+        )
+        metrics.score_latency_seconds.labels(kind="behaviour").observe(
+            max(0.0, event_latency_ms) / 1000.0
+        )
 
         message = RiskScoreEvent.from_risk_score(
             result,

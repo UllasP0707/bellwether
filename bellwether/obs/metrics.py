@@ -127,6 +127,11 @@ band_transitions = Counter(
     ["direction"],
     registry=REGISTRY,
 )
+future_dated_events = Counter(
+    "bellwether_future_dated_events_total",
+    "Events whose timestamp is ahead of the scorer's clock.",
+    registry=REGISTRY,
+)
 population_band = Gauge(
     "bellwether_population_band_employees",
     "Employees currently in each risk band.",
