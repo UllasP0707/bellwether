@@ -6,7 +6,8 @@ CLI := $(PY) -m bellwether.generator.cli
 
 .PHONY: help install install-dbt up down logs topics seed backfill backfill-kafka live \
         demo-incident score consume serve intervene test test-all lint fmt clean \
-        batch parity warehouse dbt dags dag-daily backfill-twice
+        batch parity warehouse dbt dags dag-daily backfill-twice \
+        observe trace-demo contracts loadtest infra erase
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -124,3 +125,12 @@ contracts: ## Run the data-quality contracts for a day (DATE=2026-08-14)
 
 loadtest: ## Where this breaks, and what breaks first (docs/LOAD_TEST.md)
 	$(PY) -m bellwether.cli load all
+
+infra: ## Validate the Terraform and the Kubernetes manifests (never applied)
+	terraform -chdir=infra/terraform fmt -check -recursive
+	terraform -chdir=infra/terraform init -backend=false -input=false >/dev/null
+	terraform -chdir=infra/terraform validate
+	$(PY) scripts/check_manifests.py
+
+erase: ## Dry-run erasure for one employee (EMPLOYEE=E0042)
+	$(PY) -m bellwether.cli privacy erase --employee $(or $(EMPLOYEE),E0042)

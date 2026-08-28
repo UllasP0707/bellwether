@@ -110,3 +110,37 @@ jobs:
             echo "::error::the parity test skipped itself — no usable JVM"
             exit 1
           fi
+
+  # Infrastructure is validated but never applied -- there is no AWS account
+  # attached to this project. `validate` proves the configuration is
+  # internally consistent: every reference resolves, every type matches, no
+  # resource names a field that does not exist. It does not prove AWS would
+  # accept it, and infra/README.md says so in the first table.
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+
+      - name: Format
+        run: terraform -chdir=infra/terraform fmt -check -recursive
+
+      - name: Validate
+        # -backend=false because the real backend is an S3 bucket configured
+        # per environment, and `init` would otherwise need credentials to
+        # check syntax.
+        run: |
+          terraform -chdir=infra/terraform init -backend=false -input=false
+          terraform -chdir=infra/terraform validate
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Kubernetes manifests
+        run: |
+          python -m pip install --quiet pyyaml
+          python scripts/check_manifests.py

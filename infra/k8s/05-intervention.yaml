@@ -1,0 +1,55 @@
+# The stage that reaches a person, and the only one deployed as a singleton.
+#
+# `replicas: 1` and `Recreate`, deliberately, and it is not about throughput.
+# Interventions are ~1.8% of scores so one instance is ample. The reason is
+# that this is the only stage whose side effect is visible to a human, and two
+# instances mid-rollout means two consumers, a rebalance, and redelivery --
+# which the unique index on (tenant, employee, trigger_event_id) makes safe,
+# but "safe because a database constraint catches it" is a worse place to be
+# than "cannot happen" for the component that emails people.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intervention
+  namespace: bellwether
+spec:
+  replicas: 1
+  strategy:
+    # Not RollingUpdate. Stop the old pod before starting the new one.
+    type: Recreate
+  selector:
+    matchLabels: {app: intervention}
+  template:
+    metadata:
+      labels: {app: intervention}
+    spec:
+      serviceAccountName: intervention
+      # Longer than the others. The copy call has a 45-second timeout, so a
+      # shorter grace period would kill the pod mid-generation and leave a
+      # ledger row for a message that was never published.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: intervention
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/bellwether:VERSION
+          args: ["intervene", "--metrics-port", "9100", "--idle-timeout", "86400"]
+          envFrom:
+            - configMapRef: {name: bellwether}
+            - secretRef: {name: bellwether-db}
+            - secretRef: {name: bellwether-copy}
+          ports:
+            - {name: metrics, containerPort: 9100}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          livenessProbe:
+            httpGet: {path: /metrics, port: metrics}
+            initialDelaySeconds: 20
+            periodSeconds: 30

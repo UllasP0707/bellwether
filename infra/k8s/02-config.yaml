@@ -1,0 +1,20 @@
+# Non-secret configuration. Endpoints come from `terraform output`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bellwether
+  namespace: bellwether
+data:
+  BELLWETHER_TENANT_ID: acme
+  BELLWETHER_KAFKA_BOOTSTRAP: MSK_BOOTSTRAP
+  BELLWETHER_REDIS_URL: rediss://REDIS_ENDPOINT:6379/0
+  BELLWETHER_S3_BUCKET: bellwether-ENV-lake
+  BELLWETHER_LOG_LEVEL: INFO
+  BELLWETHER_OTLP_ENDPOINT: http://opentelemetry-collector.observability:4318
+  # The scrape port. Fixed per component in bellwether/obs/startup.py, and the
+  # ServiceMonitor below selects on the port *name*, so the two stay aligned
+  # even if a number changes.
+  BELLWETHER_METRICS_PORT: "9100"
+  # A privacy bound rather than a cache setting: how long an erased employee
+  # may still be resident in a running process. See bellwether/dimension.py.
+  BELLWETHER_DIMENSION_STALE_AFTER_SECONDS: "300"

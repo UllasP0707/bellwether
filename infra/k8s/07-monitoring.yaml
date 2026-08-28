@@ -1,0 +1,59 @@
+# One ServiceMonitor for everything, selecting on a port name.
+#
+# The local stack lists five static scrape targets because the stages are CLI
+# invocations on a laptop. Here they are pods, so discovery selects on a label
+# and a new component is scraped by existing. The shape of what is exported
+# is identical either way, which is the point of declaring the metric surface
+# in one module.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: bellwether
+  namespace: bellwether
+  labels: {release: prometheus}
+spec:
+  namespaceSelector:
+    matchNames: [bellwether]
+  selector:
+    matchLabels: {bellwether.io/scrape: "true"}
+  endpoints:
+    - port: metrics
+      interval: 15s
+---
+# Headless services exist purely so the ServiceMonitor has something to select
+# for the consumers, which take no inbound traffic.
+apiVersion: v1
+kind: Service
+metadata:
+  name: scorer-metrics
+  namespace: bellwether
+  labels: {bellwether.io/scrape: "true"}
+spec:
+  clusterIP: None
+  selector: {app: scorer}
+  ports:
+    - {name: metrics, port: 9100, targetPort: metrics}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: normalizer-metrics
+  namespace: bellwether
+  labels: {bellwether.io/scrape: "true"}
+spec:
+  clusterIP: None
+  selector: {app: normalizer}
+  ports:
+    - {name: metrics, port: 9100, targetPort: metrics}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: intervention-metrics
+  namespace: bellwether
+  labels: {bellwether.io/scrape: "true"}
+spec:
+  clusterIP: None
+  selector: {app: intervention}
+  ports:
+    - {name: metrics, port: 9100, targetPort: metrics}

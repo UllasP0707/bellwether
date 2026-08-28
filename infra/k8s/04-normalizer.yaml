@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: normalizer
+  namespace: bellwether
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: normalizer}
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels: {app: normalizer}
+    spec:
+      serviceAccountName: normalizer
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: normalizer
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/bellwether:VERSION
+          args: ["normalize", "--metrics-port", "9100", "--idle-timeout", "86400"]
+          envFrom:
+            - configMapRef: {name: bellwether}
+            - secretRef: {name: bellwether-db}
+          ports:
+            - {name: metrics, containerPort: 9100}
+          # Measured at ~20,000 msg/s, an order of magnitude above the scorer,
+          # so this is sized small and scaled by hand. It is not the ceiling
+          # and provisioning it as though it were would waste a node.
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          livenessProbe:
+            httpGet: {path: /metrics, port: metrics}
+            initialDelaySeconds: 20
+            periodSeconds: 30

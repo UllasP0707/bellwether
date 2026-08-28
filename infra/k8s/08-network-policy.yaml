@@ -1,0 +1,78 @@
+# Default deny, then the specific paths.
+#
+# Without a default-deny policy every pod in the cluster can reach every other
+# pod, which makes the per-component IAM split in Terraform half a control:
+# the scorer could not read the archive through IAM, but could reach the
+# connector's pod and ask it to.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: bellwether
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-data-and-dns
+  namespace: bellwether
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    # MSK, RDS and ElastiCache are outside the cluster, so this is a CIDR
+    # rather than a selector -- narrowed to the VPC, which is the tightest a
+    # NetworkPolicy can express for a managed service.
+    - to:
+        - ipBlock: {cidr: 10.40.0.0/16}
+      ports:
+        - {protocol: TCP, port: 9094}
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 6379}
+---
+# Only the connector talks to the internet, and only it needs to: vendor APIs
+# and, when the model copy path is enabled, the generation gateway. Every
+# other component reaching outward would be a finding.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-connector-egress-internet
+  namespace: bellwether
+spec:
+  podSelector:
+    matchLabels: {app: connector}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
+      ports:
+        - {protocol: TCP, port: 443}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-scrape-and-api-ingress
+  namespace: bellwether
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: observability}
+      ports:
+        - {protocol: TCP, port: 9100}
+    - from:
+        - podSelector: {matchLabels: {app: api}}
+      ports:
+        - {protocol: TCP, port: 8800}

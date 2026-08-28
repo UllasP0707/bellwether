@@ -1,0 +1,28 @@
+# Voluntary disruption budgets.
+#
+# The intervention stage has none on purpose: it is a singleton, and a PDB on a
+# single replica blocks node drains indefinitely. It is cheap to take down --
+# scores queue on the topic and are decided when it returns -- so the right
+# answer is to let it be evicted rather than to wedge cluster maintenance.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+  namespace: bellwether
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: {app: api}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: scorer
+  namespace: bellwether
+spec:
+  # A count, not a percentage: KEDA moves the replica count between 2 and 12,
+  # and a percentage would silently allow the whole fleet to drain at the
+  # bottom of that range.
+  minAvailable: 2
+  selector:
+    matchLabels: {app: scorer}

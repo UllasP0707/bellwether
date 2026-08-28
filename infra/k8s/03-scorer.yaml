@@ -1,0 +1,92 @@
+# The scorer. The component the load test says is the ceiling.
+#
+# Scaling is on **consumer lag**, not CPU. That is the whole reason this runs
+# on Kubernetes with KEDA rather than on an ASG: the load test measured 736
+# events/sec per instance bound by Redis round trips, so a scorer that is
+# falling behind is not busy -- it sits at low CPU while lag climbs, and a
+# CPU-based HPA would never scale it out.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scorer
+  namespace: bellwether
+spec:
+  # KEDA owns this; the value here is only what applies before it starts.
+  replicas: 2
+  selector:
+    matchLabels: {app: scorer}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # One at a time, and never below the current count. Every membership
+      # change rebalances the consumer group, and a rolling update that
+      # replaces several pods at once turns a deploy into a pause.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels: {app: scorer}
+    spec:
+      serviceAccountName: scorer
+      # 60s, well above the default 30. The stage commits offsets after
+      # flushing its producer, and SIGTERM must not land between the two --
+      # that is the window where at-least-once turns into lost work.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: scorer
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/bellwether:VERSION
+          args: ["score-stream", "--metrics-port", "9100", "--idle-timeout", "86400"]
+          envFrom:
+            - configMapRef: {name: bellwether}
+            - secretRef: {name: bellwether-db}
+          ports:
+            - {name: metrics, containerPort: 9100}
+          resources:
+            # Requests equal limits on memory, so the pod is Guaranteed and
+            # cannot be evicted under node pressure mid-window. CPU has no
+            # limit deliberately: throttling a consumer that is already behind
+            # is the opposite of what is wanted, and this workload is not
+            # CPU-bound anyway.
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          livenessProbe:
+            # The exporter answers only while the consumer loop is running, so
+            # this is a real liveness signal rather than a TCP check that
+            # passes on a wedged process.
+            httpGet: {path: /metrics, port: metrics}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            failureThreshold: 3
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: scorer
+  namespace: bellwether
+spec:
+  scaleTargetRef: {name: scorer}
+  minReplicaCount: 2
+  # Twelve, because `events.normalized` has twelve partitions and a
+  # thirteenth consumer in the group would sit idle holding no assignment.
+  maxReplicaCount: 12
+  cooldownPeriod: 300
+  triggers:
+    - type: apache-kafka
+      metadata:
+        bootstrapServers: MSK_BOOTSTRAP
+        consumerGroup: bellwether-scorer
+        topic: bellwether.events.normalized
+        # Roughly ten seconds of work for one instance at the measured 736/s.
+        # Lower would scale out on ordinary jitter and spend the rest of the
+        # day rebalancing.
+        lagThreshold: "5000"
+        sasl: aws_msk_iam
+        tls: enable
