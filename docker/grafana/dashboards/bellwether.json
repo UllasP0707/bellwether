@@ -1,0 +1,806 @@
+{
+  "uid": "bellwether-overview",
+  "title": "Bellwether",
+  "description": "Ingest, score, intervene. Ordered by the question you ask first: is it alive, is it keeping up, is it acting.",
+  "tags": [
+    "bellwether"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "editable": false,
+  "panels": [
+    {
+      "type": "row",
+      "title": "Is it alive",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Stages up",
+      "description": "A dead consumer produces no error, only silence. This is the one panel that catches that.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum(up{job=\"bellwether\"})",
+          "legendFormat": "up",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Worst consumer lag",
+      "description": "Messages between the group's position and the end of the log. Only the broker knows this.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 1,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "max(bellwether_consumer_lag_messages)",
+          "legendFormat": "messages",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "ingest to score p99",
+      "description": "The SLO. p50 inside the target with a p99 outside it means the incidents that matter are the late ones.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 9,
+        "y": 1,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(bellwether_score_latency_seconds_bucket{kind=\"ingest\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Sent in the last hour",
+      "description": "Messages that reached a real person. The number this system is most obliged to keep small.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 1,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum(increase(bellwether_interventions_sent_total[1h]))",
+          "legendFormat": "sent",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Failing data contracts",
+      "description": "Distributional checks. Nothing here is malformed and every dbt test is still green.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 19,
+        "y": 1,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum(bellwether_data_quality_failing)",
+          "legendFormat": "failing",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "type": "row",
+      "title": "Throughput",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Messages per second by stage",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum by (stage) (rate(bellwether_stage_messages_total[1m]))",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Outcomes per second",
+      "description": "Every message is accounted for by what the stage decided about it, not just by whether it threw.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 6,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum by (stage, outcome) (rate(bellwether_stage_messages_total[1m]))",
+          "legendFormat": "{{stage}} {{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Latency",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Score latency percentiles",
+      "description": "`ingest` is the pipeline's own latency and the SLO. `behaviour` includes however long the vendor sat on the record, which is not ours to fix but is what the employee experiences.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le, kind) (rate(bellwether_score_latency_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{kind}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, kind) (rate(bellwether_score_latency_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{kind}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Handler time per message",
+      "description": "Time inside the handler alone. Rising here with flat lag means the work got heavier; rising lag with flat handler time means the input did.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, stage) (rate(bellwether_stage_handle_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{stage}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumer lag by partition",
+      "description": "Per partition, because a single hot employee can hot-spot one while the rest keep up -- events are keyed by employee on purpose.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "bellwether_consumer_lag_messages",
+          "legendFormat": "{{stage}} {{topic}}/{{partition}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Risk",
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Band transitions per minute",
+      "description": "Split by direction. Downward is the intervention engine working; upward at the same rate is an incident. One counter could not tell them apart.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum by (direction) (rate(bellwether_band_transitions_total[5m]) * 60)",
+          "legendFormat": "{{direction}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Population by band",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "bellwether_population_band_employees",
+          "legendFormat": "{{band}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Interventions",
+      "gridPos": {
+        "x": 0,
+        "y": 35,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Sent per hour by rung",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum by (type) (rate(bellwether_interventions_sent_total[15m]) * 3600)",
+          "legendFormat": "{{type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Suppressed by which gate",
+      "description": "Suppression is the expected outcome. A run where nothing is suppressed usually means the policy is not being reached at all.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 36,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum by (reason) (rate(bellwether_interventions_suppressed_total[15m]) * 3600)",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Guardrail rejections by rule",
+      "description": "Drafts stopped before anyone read them. `overclaiming` is the one specific to this product: the system observes behaviour and must never assert a compromise.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 36,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum by (rule) (rate(bellwether_copy_guardrail_rejections_total[1h]) * 3600)",
+          "legendFormat": "{{rule}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Generated copy",
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Generation time",
+      "description": "Two orders of magnitude slower than anything else here, which is why drafts are cached by brief shape rather than generated per message.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(bellwether_copy_generation_seconds_bucket[10m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(bellwether_copy_generation_seconds_bucket[10m])))",
+          "legendFormat": "p99",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache hit rate",
+      "description": "Rises with volume: the number of distinct brief shapes is bounded by the signal catalog, so model calls stop scaling with traffic.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 44,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum(rate(bellwether_copy_cache_total{result=\"hit\"}[10m])) / clamp_min(sum(rate(bellwether_copy_cache_total[10m])), 0.001)",
+          "legendFormat": "hit rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Why generation failed",
+      "description": "An exhausted quota and a model writing unacceptable copy both end as 'fell back to a template'. One is fixed on a billing page, the other in a prompt.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 44,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum by (kind) (rate(bellwether_copy_failures_total[10m]) * 60)",
+          "legendFormat": "{{kind}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "The read path",
+      "gridPos": {
+        "x": 0,
+        "y": 51,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "API requests per second",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 52,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "sum by (route, status) (rate(bellwether_api_requests_total[1m]))",
+          "legendFormat": "{{route}} {{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "API p99 by route",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bellwether-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 52,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bellwether-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(bellwether_api_request_seconds_bucket[5m])))",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

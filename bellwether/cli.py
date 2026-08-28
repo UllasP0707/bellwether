@@ -20,6 +20,8 @@ from rich.table import Table
 from bellwether.batch.cli import app as batch_app
 from bellwether.config import Topics, settings
 from bellwether.generator.cli import app as generator_app
+from bellwether.obs.cli import app as quality_app
+from bellwether.obs.startup import start
 from bellwether.warehouse.cli import app as warehouse_app
 
 app = typer.Typer(add_completion=False, help="Bellwether: a human-risk platform.")
@@ -29,6 +31,7 @@ app.add_typer(generator_app, name="generate", help="Synthetic population and beh
 # command is actually run.
 app.add_typer(batch_app, name="batch", help="The Spark batch path.")
 app.add_typer(warehouse_app, name="warehouse", help="Land Spark output for dbt.")
+app.add_typer(quality_app, name="quality", help="Data contracts over the warehouse.")
 console = Console()
 
 
@@ -196,6 +199,9 @@ def normalize(
     dedup: Annotated[str, typer.Option(help="Dedup store: redis or memory.")] = "redis",
     idle_timeout: Annotated[float, typer.Option(help="Stop after N idle seconds.")] = 5.0,
     from_beginning: Annotated[bool, typer.Option(help="Read from the earliest offset.")] = True,
+    metrics_port: Annotated[
+        int, typer.Option(help="Serve Prometheus metrics on this port; -1 for the default.")
+    ] = -1,
 ) -> None:
     """Re-key events.raw onto events.normalized, deduplicating as it goes."""
     from bellwether.stream.dedup import DedupStore, InMemoryDedup, RedisDedup
@@ -203,9 +209,11 @@ def normalize(
     from bellwether.stream.runner import RunnerOptions, run_normalizer
 
     config = settings()
+    observability = start("normalizer", metrics_port)
     store: DedupStore = RedisDedup(config.redis_url) if dedup == "redis" else InMemoryDedup()
 
     console.print(f"normalizing {Topics.RAW} -> {Topics.NORMALIZED} (group {group})")
+    console.print(f"[dim]{observability}[/dim]")
     stats = run_normalizer(
         bootstrap=config.kafka_bootstrap,
         normalizer=Normalizer(dedup=store),
@@ -242,6 +250,9 @@ def score_stream(
     idle_timeout: Annotated[float, typer.Option(help="Stop after N idle seconds.")] = 5.0,
     from_beginning: Annotated[bool, typer.Option(help="Read from the earliest offset.")] = True,
     lookback: Annotated[int, typer.Option(help="Scoring window in days.")] = 30,
+    metrics_port: Annotated[
+        int, typer.Option(help="Serve Prometheus metrics on this port; -1 for the default.")
+    ] = -1,
 ) -> None:
     """Score events.normalized onto the compacted risk.scores topic."""
     from bellwether.dimension import PostgresEmployeeRepository
@@ -255,6 +266,7 @@ def score_stream(
     )
 
     config = settings()
+    observability = start("scorer", metrics_port)
     employees = PostgresEmployeeRepository(config.postgres_dsn, tenant_id=config.tenant_id)
     if not employees.all():
         raise typer.BadParameter("employee dimension is empty; run load-dimension first")
@@ -276,6 +288,7 @@ def score_stream(
         f"scoring {Topics.NORMALIZED} -> {Topics.SCORES} "
         f"({len(employees.all()):,} employees, {lookback}d window, group {group})"
     )
+    console.print(f"[dim]{observability}[/dim]")
     stats = run_scorer(
         scorer=scorer,
         bootstrap=config.kafka_bootstrap,
@@ -333,6 +346,9 @@ def serve(
     port: Annotated[int, typer.Option(help="Port to serve on.")] = 8800,
     host: Annotated[str, typer.Option(help="Bind address.")] = "127.0.0.1",
     reload: Annotated[bool, typer.Option(help="Reload on code changes.")] = False,
+    metrics_port: Annotated[
+        int, typer.Option(help="Serve Prometheus metrics on this port; -1 for the default.")
+    ] = -1,
 ) -> None:
     """Serve the read API and the dashboard.
 
@@ -348,6 +364,7 @@ def serve(
     from bellwether.stream.store import RedisOnlineStore
 
     config = settings()
+    observability = start("api", metrics_port)
     principals = parse_keys(config.api_keys)
     if not principals:
         raise typer.BadParameter("no API keys configured; set BELLWETHER_API_KEYS")
@@ -385,6 +402,7 @@ def serve(
         console.print(f"  key [dim]{key}[/dim] -> {principal.actor} @ {principal.tenant_id}")
     console.print(f"dashboard http://{host}:{port}/?key={next(iter(principals))}")
     console.print(f"docs      http://{host}:{port}/docs")
+    console.print(f"[dim]{observability}[/dim]")
 
     uvicorn.run(api, host=host, port=port, reload=reload, log_level="warning")
 
@@ -410,6 +428,9 @@ def intervene(
     ] = False,
     idle_timeout: Annotated[float, typer.Option(help="Stop after N idle seconds.")] = 5.0,
     from_beginning: Annotated[bool, typer.Option(help="Read from the earliest offset.")] = True,
+    metrics_port: Annotated[
+        int, typer.Option(help="Serve Prometheus metrics on this port; -1 for the default.")
+    ] = -1,
 ) -> None:
     """Decide interventions from risk.scores and publish them to the outbox.
 
@@ -431,6 +452,7 @@ def intervene(
     from bellwether.stream.runner import RunnerOptions, run_interventions
 
     config = settings()
+    observability = start("intervention", metrics_port)
     employees = PostgresEmployeeRepository(config.postgres_dsn, tenant_id=config.tenant_id)
     if not employees.all():
         raise typer.BadParameter("employee dimension is empty; run load-dimension first")
@@ -461,6 +483,7 @@ def intervene(
         f"spacing {min_spacing_hours}h, cap {weekly_cap}/week, "
         f"manager rung {'on' if allow_manager else 'off'})"
     )
+    console.print(f"[dim]{observability}[/dim]")
     stats = run_interventions(
         stage=stage,
         bootstrap=config.kafka_bootstrap,

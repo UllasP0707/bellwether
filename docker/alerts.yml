@@ -1,0 +1,119 @@
+# What "unhealthy" means, written down.
+#
+# A dashboard shows you numbers when you already suspect something. These are
+# the statements about what is not acceptable, which is the part that has to
+# exist before anyone is on call. Each one names the symptom rather than the
+# cause, because the cause varies and the symptom is what gets noticed.
+#
+# Deliberately short. Ten alerts that fire get read; forty do not.
+groups:
+  - name: pipeline
+    rules:
+      - alert: StageDown
+        expr: up{job="bellwether"} == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.component }} is not being scraped"
+          description: >-
+            No metrics endpoint. Nothing is scoring, and nothing will say so:
+            a dead consumer produces no error, only silence.
+
+      - alert: ConsumerLagGrowing
+        # Absolute lag is meaningless during a backfill, when a stage is
+        # legitimately thousands of messages behind and catching up fast. The
+        # question is whether it is losing ground, so this alerts on lag that
+        # is high *and* has not fallen in fifteen minutes.
+        expr: |
+          bellwether_consumer_lag_messages > 5000
+          and deriv(bellwether_consumer_lag_messages[15m]) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.stage }} is falling behind on {{ $labels.topic }}"
+
+      - alert: ScoringLatencyBreachingSLO
+        # The product claim is that a score moves within seconds of the
+        # behaviour. p99 is the right statistic: a p50 inside the SLO with a
+        # p99 of two minutes still means the incidents that matter are late.
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(bellwether_score_latency_seconds_bucket{kind="ingest"}[10m]))
+          ) > 30
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "ingest-to-score p99 is above 30s"
+
+      - alert: DeadLettersArriving
+        # Not zero-tolerance. One malformed record is a vendor having a bad
+        # day and the dead-letter topic doing its job; a sustained rate means
+        # a schema changed and a connector has not noticed.
+        expr: rate(bellwether_stage_messages_total{outcome="dead_lettered"}[15m]) > 0.1
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.stage }} is dead-lettering steadily"
+
+  - name: interventions
+    rules:
+      # The two alerts that matter most in this system point in opposite
+      # directions, and both are about a thing that reaches a real person.
+      - alert: InterventionVolumeSpike
+        expr: sum(rate(bellwether_interventions_sent_total[1h])) > 50 / 3600
+        for: 30m
+        labels: {severity: critical}
+        annotations:
+          summary: "interventions are going out faster than 50/hour"
+          description: >-
+            The rate gates exist to make this impossible. If it is happening,
+            either a policy was widened or a replay is being treated as live
+            traffic. Stop the stage first; a message cannot be unsent.
+
+      - alert: NoInterventionsAtAll
+        # The quieter failure, and the one nobody notices. A broken trigger, a
+        # cooldown misconfigured to a month, or a scorer that stopped
+        # publishing all look identical from here: silence.
+        expr: |
+          sum(rate(bellwether_stage_messages_total{stage="intervention"}[6h])) > 0
+          and sum(increase(bellwether_interventions_sent_total[24h])) == 0
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "the intervention stage is running but has sent nothing in 24h"
+
+      - alert: CopyFallingBackToTemplates
+        # Templates are a supported configuration, not an outage, so this is a
+        # warning about a degraded path rather than a broken one.
+        expr: |
+          sum(rate(bellwether_copy_failures_total[30m]))
+          / clamp_min(sum(rate(bellwether_copy_cache_total{result="miss"}[30m])), 0.001) > 0.5
+        for: 30m
+        labels: {severity: info}
+        annotations:
+          summary: "over half of copy generations are failing ({{ $labels.kind }})"
+
+      - alert: GuardrailsRejectingModelOutput
+        # This one is about the model, not the infrastructure. A rising
+        # rejection rate means generated copy has started saying things it
+        # must not, and the guardrails are the only thing between that and an
+        # employee.
+        expr: sum(rate(bellwether_copy_guardrail_rejections_total[1h])) > 1 / 3600
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "guardrails are rejecting drafts on rule {{ $labels.rule }}"
+
+  - name: data
+    rules:
+      - alert: DataQualityContractFailing
+        expr: bellwether_data_quality_failing > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.check }} failing on {{ $labels.dataset }}"
+          description: >-
+            A distributional check, so nothing is malformed and every dbt test
+            will still be green. Most often a connector has stopped returning
+            one record type.

@@ -73,5 +73,20 @@ with DAG(
     # opens tomorrow morning.
     test = BashOperator(task_id="dbt_test", bash_command=dbt("test"))
 
+    # Distributional checks, and the only task here that looks at more than one
+    # day. It runs against the warehouse rather than the marts, and *after* the
+    # load rather than after dbt, because the question is whether what arrived
+    # resembles what usually arrives — which is answerable before anything is
+    # modelled and stays answerable on a day dbt fails.
+    #
+    # `--fail` because this is the scheduler. The same command run by hand
+    # defaults to reporting without exiting non-zero, since somebody
+    # investigating a bad day wants the numbers rather than a shell error.
+    contracts = BashOperator(
+        task_id="data_contracts",
+        bash_command=cli("quality check --as-of '{{ ds }}' --fail"),
+    )
+
     to_parquet >> rollups >> score >> load
     load >> check_seed >> seed >> build >> test
+    load >> contracts

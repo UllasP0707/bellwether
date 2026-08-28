@@ -1,0 +1,12 @@
+# Provisioned from a file so the dashboard works on a fresh volume. A data
+# source configured through the UI lives in Grafana's own database and
+# disappears with `docker compose down -v`, which makes the dashboard JSON
+# below unopenable for the next person who clones this.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: bellwether-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true

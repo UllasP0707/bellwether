@@ -154,6 +154,56 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command: ["airflow db migrate >/dev/null 2>&1 && airflow dags list"]
 
+  # Observability, behind a profile so the everyday stack stays four services.
+  #
+  #   docker compose --profile observability up -d
+  #
+  # Prometheus scrapes; nothing pushes. A Pushgateway would be the answer for
+  # jobs that exit, and it brings the failure mode worth avoiding here: pushed
+  # metrics outlive the process that pushed them, so a dead consumer keeps
+  # reporting the last numbers it had. A scrape that fails is unambiguous.
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "9090:9090"
+    # The stages run on the host, not in compose, because they are CLI
+    # invocations. This is what lets a container scrape them.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.3.1
+    depends_on: [prometheus]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      # Provisioned from files rather than clicked together in the UI, so the
+      # dashboard is in the diff and survives `docker compose down -v`.
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+
+  jaeger:
+    profiles: ["observability"]
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # UI
+      - "4318:4318"    # OTLP over HTTP, which is what the exporter speaks
+
 volumes:
   pgdata:
   miniodata:

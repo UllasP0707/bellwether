@@ -37,6 +37,7 @@ from bellwether.generator.sinks import (
     dump_population,
     load_events,
 )
+from bellwether.obs import tracing
 from bellwether.scoring import score_events
 
 app = typer.Typer(add_completion=False, help="Bellwether synthetic behavior generator.")
@@ -50,6 +51,10 @@ LakeOpt = Annotated[Path, typer.Option(help="Local lake root.")]
 def _build_sink(target: str, lake: Path) -> Sink:
     """Resolve a `--to` value to a sink."""
     bootstrap = settings().kafka_bootstrap
+    # Producing is where a Bellwether trace begins, so the tracer has to be
+    # installed before the first event rather than by whichever stage happens
+    # to run next. Inert without an endpoint configured, and idempotent.
+    tracing.configure("bellwether-producer")
     match target:
         case "lake":
             return JsonlSink(lake)

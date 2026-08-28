@@ -11,8 +11,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Protocol, TextIO
 
+from opentelemetry import trace
+
 from bellwether.events.schema import BehaviorEvent
 from bellwether.generator.population import PopulatedEmployee
+from bellwether.obs import tracing
 
 
 class Sink(Protocol):
@@ -99,12 +102,23 @@ class KafkaSink:
             self.failed += 1
 
     def write(self, event: BehaviorEvent) -> None:
-        self._producer.produce(
-            self.topic,
-            key=event.partition_key(),
-            value=event.model_dump_json().encode(),
-            on_delivery=self._on_delivery,
-        )
+        # A span per event, and it is the root of everything downstream. This
+        # is the only place a Bellwether trace can begin: the stages continue
+        # whatever trace they are handed, so if nothing is started here the
+        # pipeline produces four disconnected traces and the question "why did
+        # this person get this message" has no mechanical answer.
+        with tracing.tracer().start_as_current_span(
+            "produce event", kind=trace.SpanKind.PRODUCER
+        ) as span:
+            span.set_attribute("bellwether.signal", event.signal.value)
+            span.set_attribute("messaging.destination.name", self.topic)
+            self._producer.produce(
+                self.topic,
+                key=event.partition_key(),
+                value=event.model_dump_json().encode(),
+                headers=list(tracing.inject()) or None,
+                on_delivery=self._on_delivery,
+            )
         self.produced += 1
         # Serve delivery callbacks without blocking; the queue is drained on close.
         self._producer.poll(0)

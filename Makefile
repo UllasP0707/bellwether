@@ -108,3 +108,16 @@ fmt: ## Format
 
 clean: ## Remove venv and local data
 	rm -rf $(VENV) data .pytest_cache .ruff_cache .mypy_cache
+
+observe: ## Prometheus, Grafana and Jaeger (profile: observability)
+	docker compose --profile observability up -d
+	@echo "grafana    http://localhost:3000/d/bellwether-overview"
+	@echo "prometheus http://localhost:9090"
+	@echo "jaeger     http://localhost:16686"
+	@echo "then run any stage with BELLWETHER_OTLP_ENDPOINT=http://localhost:4318"
+
+trace-demo: ## One incident, traced end to end across three topics
+	./scripts/trace_demo.sh
+
+contracts: ## Run the data-quality contracts for a day (DATE=2026-08-14)
+	$(PY) -m bellwether.cli quality check --as-of $(or $(DATE),2026-08-14)

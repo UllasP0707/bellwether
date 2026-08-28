@@ -27,12 +27,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, Security
 from fastapi import Path as PathParam
 from fastapi.responses import HTMLResponse
 from fastapi.security import APIKeyHeader
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from bellwether.api.audit import InMemoryAudit, ReadAudit
 from bellwether.api.models import (
@@ -51,6 +52,7 @@ from bellwether.dimension import EmployeeRepository
 from bellwether.events.schema import SignalType
 from bellwether.events.scores import RiskScoreEvent
 from bellwether.interventions.policy import InterventionLedger
+from bellwether.obs import metrics
 from bellwether.scoring import RiskBand, contribution_of
 from bellwether.scoring.catalog import CATALOG, spec_for
 from bellwether.stream.store import EventWindow, ScoreReader
@@ -99,6 +101,17 @@ def _percentile(values: list[float], p: float) -> float:
     return ordered[min(int(p / 100 * len(ordered)), len(ordered) - 1)]
 
 
+def _route(request: Request) -> str:
+    """The matched route template, or `unmatched` for a 404.
+
+    Falling back to the raw path here would reintroduce the cardinality the
+    middleware exists to avoid, and a scanner walking random URLs would be
+    enough to do it.
+    """
+    route = request.scope.get("route")
+    return str(getattr(route, "path", None) or "unmatched")
+
+
 _HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
@@ -145,6 +158,29 @@ def create_app(
     )
     app.state.principals = principals
     app.state.tenants = tenants
+
+    @app.middleware("http")
+    async def observe(request: Request, call_next: Any) -> Response:
+        """Count and time every request, labelled by route template.
+
+        The *template* — `/v1/employees/{employee_id}/score` — and never the
+        resolved path. Labelling by path would create one time series per
+        employee ever looked up, which is unbounded cardinality and, worse, a
+        list on an unauthenticated endpoint of exactly whose risk score the
+        security team has been reading. The audit log records that on purpose,
+        behind a credential; the metrics endpoint must not record it by
+        accident.
+        """
+        with metrics.timed(metrics.api_request_seconds, route=_route(request)):
+            response: Response = await call_next(request)
+        metrics.api_requests.labels(
+            route=_route(request), status=f"{response.status_code // 100}xx"
+        ).inc()
+        return response
+
+    @app.get("/metrics", include_in_schema=False)
+    def prometheus() -> Response:
+        return Response(generate_latest(metrics.REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
     def context(principal: Principal) -> TenantContext:
         return tenants[principal.tenant_id]
