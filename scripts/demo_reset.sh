@@ -64,4 +64,54 @@ $PY -m bellwether.cli intervene --idle-timeout 10 --metrics-port 0 --copy templa
 echo
 $PY -m bellwether.cli scores --employee "$EMPLOYEE" 2>/dev/null || true
 echo
-echo "ready. now run: ./scripts/demo.sh"
+
+# --- verify the state this script exists to produce ---------------------------
+#
+# This used to print "ready" unconditionally, and it was wrong often enough to
+# matter. `generate backfill` seeds the *population* -- who has which persona --
+# but not the behaviour draw, so thirty days of history is a fresh roll every
+# time. One roll leaves E0042 at 51.79 and elevated, which is the narrative; the
+# next hands them a `phish_credentials_submitted` and they start at 83.36 and
+# critical, which is not.
+#
+# The failure was circular and would only ever be discovered with a camera
+# running: this script ended with "now run ./scripts/demo.sh", and demo.sh's
+# preflight answered "run ./scripts/demo_reset.sh first". A reset that tells you
+# to run a demo that tells you to run the reset is worse than no reset at all.
+#
+# So the outcome is checked, and when the draw is unusable the script finds a
+# subject it can vouch for rather than failing and leaving the operator to read
+# a ranking. Preference goes to someone already driven by phishing, because the
+# incident is a phishing chain and the "driven by" line is on screen while it
+# happens.
+band=$($PY -m bellwether.cli scores --employee "$EMPLOYEE" 2>/dev/null |
+  grep -oE 'band [a-z]+' | head -1 | cut -d' ' -f2 || true)
+
+if [ "$band" = "elevated" ] || [ "$band" = "moderate" ] || [ "$band" = "low" ]; then
+  echo "ready. now run: ./scripts/demo.sh"
+  exit 0
+fi
+
+# Highest scorer still inside `elevated`: closest to a crossing, so the incident
+# moves them a visible distance rather than nudging a zero.
+pick() {
+  $PY -m bellwether.cli scores --top 300 2>/dev/null |
+    awk -F'│' -v want="$1" 'NF>=6 {
+        for (i = 2; i <= 5; i++) gsub(/^[ \t]+|[ \t]+$/, "", $i)
+        if ($2 ~ /^E[0-9]+$/ && $4 == "elevated" && (want == "" || $5 == want)) print $3"\t"$2
+      }' | sort -rn | head -1 | cut -f2
+}
+
+alt=$(pick phishing_susceptibility)
+[ -n "$alt" ] || alt=$(pick "")
+
+if [ -z "$alt" ]; then
+  echo "$EMPLOYEE came out $band, and no employee landed in 'elevated' either." >&2
+  echo "re-run this script: the behaviour draw is random and the next roll will differ." >&2
+  exit 1
+fi
+
+echo "$EMPLOYEE came out $band this time -- the incident would not move them."
+echo "the behaviour draw is random; $alt landed in 'elevated' and works."
+echo
+echo "ready. now run: EMPLOYEE=$alt ./scripts/demo.sh"
