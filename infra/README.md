@@ -9,20 +9,47 @@ to present as more finished than it is.
 
 | | |
 | --- | --- |
-| `terraform validate` | **passes**, and runs in CI on every push |
-| `terraform fmt -check` | **passes**, and runs in CI |
-| 51 resources across 9 files | parse, type-check and reference each other correctly |
-| Kubernetes: 23 objects | parse and carry `apiVersion`/`kind` |
-| **`terraform apply`** | **never run.** No AWS account is attached to this project |
-| **`kubectl apply`** | **never run.** No cluster |
+| `terraform validate` / `fmt -check` | **pass**, and run in CI on every push |
+| **`terraform apply`** | **run against a real AWS account.** 102 resources created, `Apply complete!`, then destroyed |
+| MSK, EKS, RDS, ElastiCache | all reached `ACTIVE`/`available` |
+| Per-topic Kafka IAM | **11/11** allow *and* deny decisions correct under `iam simulate-principal-policy` |
+| The archive claim | scorer, API and batch all **denied** `s3:GetObject` on the raw archive |
+| IRSA | trust policy bound to the live OIDC issuer, `sub` **and** `aud` conditions both present |
+| **`kubectl apply`** | **still never run.** The API endpoint is private, and opening it for a demo was not worth undoing the argument in `eks.tf` |
 
-So: this is a design expressed in HCL rather than in prose, and `validate`
-proves it is internally consistent — every reference resolves, every type
-matches, no resource names a field that does not exist. It does not prove AWS
-would accept it. An instance type could be unavailable in a region, a service
-quota could refuse the cluster, an IAM condition key could be spelled
-plausibly and wrongly. Treat the reasoning as the deliverable and the HCL as
-its precise form.
+Everything above is one environment, in one region, at one moment. It proves
+the configuration converges and that the permission boundaries are real. It
+does not prove this survives an upgrade, a failover, or a year of drift.
+
+### What `validate` could not have caught
+
+The first apply failed, and the failure is the argument for doing it. Creating
+the MSK broker log group returned:
+
+```
+AccessDeniedException: The specified KMS key does not exist or is not allowed
+to be used with Arn '...:log-group:/aws/msk/bellwether-dev'
+```
+
+`aws_kms_key.data` had no `policy` argument, so it took the AWS default, which
+delegates authorization to IAM **for principals in this account**. Every other
+consumer of that key — RDS storage and Performance Insights, EKS envelope
+encryption, MSK at rest, S3, ElastiCache — reaches it through an IAM role, so
+five of six worked. CloudWatch Logs encrypts on its own behalf as a *service*
+principal, and service principals are not covered by that delegation. It has to
+be named in the key policy.
+
+This file previously predicted the class of failure without being able to find
+the instance: *"an IAM condition key could be spelled plausibly and wrongly."*
+That is exactly what it was.
+
+The fix in `kms.tf` also carries a constraint worth knowing about. The natural
+way to scope the grant is a condition on `aws_cloudwatch_log_group.msk.arn`,
+and that is a dependency cycle — the log group cannot be created until the key
+permits it, and the key policy cannot be written until the log group exists. So
+the ARN is composed from `var.region` and the account id instead, which is
+looser than a direct reference and the reason the condition is `ArnEquals` on
+one exact log group rather than a prefix match.
 
 ## Layout
 
@@ -97,11 +124,43 @@ cd infra/terraform
 terraform init -backend=false     # what CI does
 terraform validate
 terraform fmt -check -recursive
-
-# Against a real account:
-terraform init -backend-config=env/prod.backend.hcl
-terraform plan  -var environment=prod
 ```
+
+Against a real account. The state bucket has to exist first — state cannot
+bootstrap itself — and `env/*.backend.hcl` is gitignored because the bucket
+name embeds the account id; copy `env/example.backend.hcl` to start.
+
+```bash
+terraform init -backend-config=env/dev.backend.hcl
+terraform plan  -var environment=dev
+terraform apply -var environment=dev
+```
+
+Tearing it down needs two overrides, and they are variables rather than
+literals for a reason. `rds_deletion_protection` defaults to `true` in every
+environment including dev, which is correct and which makes `terraform destroy`
+fail partway — leaving an operator with a half-destroyed environment, a running
+meter, and instructions to go edit `rds.tf`. That is the moment people give up
+and leave infrastructure running, so the escape hatch is explicit and visible
+in shell history:
+
+```bash
+terraform destroy -var environment=dev \
+  -var rds_deletion_protection=false \
+  -var rds_skip_final_snapshot=true
+```
+
+Budget roughly **$1.35/hour** for the full environment, two thirds of it MSK
+and ElastiCache. Neither is sized for throughput — the load test found 736
+events/sec bounded by Redis round trips, which a far smaller node would serve.
+Three brokers is one per availability zone and the cache node is sized for one
+30-day window per employee. This is a high-availability bill, not a
+throughput bill.
+
+Set a budget alarm **before** the first apply, not after. AWS cost data lags
+8–12 hours, so an alarm is a backstop and not a circuit breaker; the thing that
+actually protects you is confirming `destroy` reached `Destroy complete!`
+rather than assuming it did.
 
 Then substitute the outputs into the manifests — `ACCOUNT_ID`, `REGION`,
 `ENV`, `VERSION`, `MSK_BOOTSTRAP`, `REDIS_ENDPOINT` — and apply. Placeholders

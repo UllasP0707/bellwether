@@ -344,8 +344,8 @@ runs gave 804, 845, 834.
 | The API afterwards | 404, and absent from the ranking |
 | Independent verification | clean |
 | A bystander | fully intact, 4 findings |
-| Terraform | 51 resources, `validate` **passes** |
-| Terraform `apply` | **never run** — no AWS account, and infra/README.md leads with that |
+| Terraform | 51 resource blocks, `validate` **passes** |
+| Terraform `apply` | **run later, against a real account** — 102 resources, one real bug found; see below |
 
 Erasure is small only because of a day-1 decision: events carry a token and PII
 lives in one table, so everything downstream keeps an identifier that resolves
@@ -377,6 +377,47 @@ incident moved nothing and "watch the band change" was false, and the
 intervention beat reported 192 messages where the story says one. Neither was a
 bug — both are what a long-lived environment looks like — and a demo that only
 works on a machine nobody has used is one that fails in front of someone.
+
+## After day 11 — the infrastructure, applied ✅
+
+Day 10 shipped Terraform that had never met AWS, and day 11 said so in the
+first table of `infra/README.md`. That gap is now closed: an account was
+attached, the environment was created, verified, and destroyed.
+
+| Check | Result |
+| --- | --- |
+| `terraform plan` against a live account | **83 to add, 0 errors** — every data source and AZ lookup resolved |
+| `terraform apply` | **102 resources**, `Apply complete!` |
+| MSK, EKS, RDS, ElastiCache | `ACTIVE` / `available`; MSK on port 9098, IAM auth, TLS both ways |
+| Per-topic Kafka permissions | **11 of 11** correct under `iam simulate-principal-policy`, allows and denies |
+| "The scorer cannot read the raw archive" | **denied** — as are the API and the batch role |
+| IRSA | bound to the live OIDC issuer, with both `sub` and `aud` conditions |
+| Service quotas | sufficient; no increase needed |
+| Cost | ~$1.35/hour, about $1.50 for the exercise |
+
+**The first apply failed, which is the point.** Creating the MSK broker log
+group was denied against the data KMS key. That key had no `policy` argument,
+so it took the AWS default — which delegates authorization to IAM *for
+principals in this account*. Five of its six consumers reach it through an IAM
+role and were fine. CloudWatch Logs encrypts as a **service principal**, which
+that delegation does not cover, and has to be named in the key policy itself.
+
+`terraform validate` had passed on this configuration for two weeks. No static
+check finds that one; it needs a real `CreateLogGroup` call. `infra/README.md`
+had predicted the *class* — "an IAM condition key could be spelled plausibly
+and wrongly" — without being able to find the instance.
+
+Two smaller things came out of the same run. `deletion_protection` was a
+literal `true`, correct as a default and wrong as a literal: `terraform
+destroy` fails on it partway through, and the documented fix was to go edit
+`rds.tf` while holding a half-destroyed environment and a running meter. It is
+now a variable with the same default and an explicit override. And the state
+bucket cannot bootstrap itself, so `env/example.backend.hcl` is committed and
+the real backend configs are gitignored — they embed an account id.
+
+**Still not applied:** the Kubernetes manifests. The EKS API endpoint is
+private by design, and opening it to the internet to demonstrate a `kubectl
+apply` would undo the argument `eks.tf` makes for closing it.
 
 ## Deliberately out of scope
 

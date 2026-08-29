@@ -177,7 +177,7 @@ make erase          # dry-run erasure for one employee
 | [`bellwether/loadtest/`](bellwether/loadtest/) | The harness behind `docs/LOAD_TEST.md`. |
 | [`transform/`](transform/) | dbt: 4 staging models, 6 marts, 42 tests. |
 | [`airflow/dags/`](airflow/dags/) | Ingest, daily batch, retention. |
-| [`infra/`](infra/) | Terraform and Kubernetes. Validated in CI, never applied. |
+| [`infra/`](infra/) | Terraform and Kubernetes. Validated in CI, applied once against a real account and destroyed. |
 
 ## Documents
 
@@ -200,12 +200,22 @@ Postgres, a separate JDK-17 job for the parity comparison, and
 Every section of [DESIGN.md](DESIGN.md) is marked `[built]`, which was not true
 until the last day and is the whole reason the marker exists.
 
-**Two things are honestly incomplete.** The infrastructure has never been
-applied — there is no AWS account attached to this project, and
-[infra/README.md](infra/README.md) leads with that rather than leaving it to be
-assumed. And the demo video is not in the repository:
-[`scripts/demo.sh`](scripts/demo.sh) runs the whole narrative so that recording
-it is a screen capture rather than a performance.
+The infrastructure has been **applied to a real AWS account** — 102 resources,
+`Apply complete!`, verified, then destroyed. That run found a bug two weeks of
+`terraform validate` could not: the data KMS key had no key policy, so it took
+the AWS default, which delegates to IAM for principals in the account. Five of
+its six consumers reach it through an IAM role and worked; CloudWatch Logs
+encrypts as a *service* principal and was refused. The permission boundaries
+were then checked rather than asserted — `iam simulate-principal-policy` agreed
+on 11 of 11 Kafka allow-and-deny decisions, the scorer was confirmed unable to
+read the raw archive, and the IRSA trust policy carried both the `sub` and the
+`aud` condition. Details in [infra/README.md](infra/README.md).
+
+**What is still incomplete:** the manifests have never been `kubectl apply`ed —
+the EKS endpoint is private by design and opening it for a demo was not worth
+undoing that argument — and the demo video is not in the repository.
+[`scripts/demo.sh`](scripts/demo.sh) runs the whole narrative, so recording it
+is a screen capture rather than a performance.
 
 **Deliberately out of scope.** Multi-tenancy beyond a tenant column, a learned
 risk model, real vendor credentials, SSO on the dashboard, a delivery worker
