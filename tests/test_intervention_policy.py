@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from bellwether.events.schema import SignalType
 from bellwether.interventions.policy import InMemoryLedger, Policy, band_rose, cooldown_active
 from bellwether.interventions.types import Channel, CopySource, InterventionEvent, InterventionType
 from bellwether.scoring import RiskBand
@@ -23,13 +24,20 @@ def sent(
     type: InterventionType = InterventionType.NUDGE,
     at: datetime = NOW,
     trigger_event_id: str = "seed",
+    signal: SignalType | None = None,
 ) -> InterventionEvent:
-    """Put a real intervention in the ledger so the gates have history to read."""
+    """Put a real intervention in the ledger so the gates have history to read.
+
+    `signal` matters to one gate only: the urgency override reads the previous
+    message's trigger to decide whether it may cut ahead of spacing. Defaults
+    to a routine signal, because that is the case the override exists for.
+    """
     event = InterventionEvent(
         tenant_id="acme",
         employee_id="E0042",
         type=type,
         channel=Channel.CHAT,
+        trigger_signal=signal or SignalType.PHISH_SIM_CLICKED,
         trigger_event_id=trigger_event_id,
         band=RiskBand.HIGH,
         score=70.0,

@@ -831,3 +831,100 @@ def test_every_gateway_failure_is_recoverable(http: FakeHTTP, why: str) -> None:
     """
     with pytest.raises(CopyUnavailableError):
         chat_writer(http).write(BRIEF)
+
+
+# --- urgency overriding spacing ------------------------------------------------
+
+
+def test_a_credential_submission_cuts_ahead_of_a_routine_message() -> None:
+    """The inversion the demo rehearsal exposed.
+
+    A phishing click crosses a band and sends a message about file sharing --
+    correct, that was the dominant category at the time. Sixty-five seconds
+    later the same person submits credentials on the page, and the 24-hour
+    spacing gate suppresses it. So the employee who has just handed over their
+    password is told to review their document shares.
+
+    Spacing is right in general. A routine message blocking an urgent one is
+    not.
+    """
+    ledger = InMemoryLedger()
+    sent(ledger, at=NOW - timedelta(minutes=1), signal=SignalType.PHISH_SIM_CLICKED)
+    decider = Decider(Policy(), ledger)
+
+    verdict = decider.evaluate(score(triggered_by=SignalType.PHISH_CREDENTIALS_SUBMITTED), NOW)
+
+    assert verdict.send
+    assert verdict.trigger is Trigger.CRITICAL_SIGNAL
+
+
+def test_the_urgency_override_fires_only_once() -> None:
+    """Bounded, or it stops being a spacing gate.
+
+    The worst case has to be one routine message followed by one urgent one,
+    never an unbounded run of urgent ones minutes apart.
+    """
+    ledger = InMemoryLedger()
+    sent(ledger, at=NOW - timedelta(minutes=1), signal=SignalType.PHISH_CREDENTIALS_SUBMITTED)
+    decider = Decider(Policy(), ledger)
+
+    verdict = decider.evaluate(score(triggered_by=SignalType.MFA_PUSH_FLOOD), NOW)
+
+    assert verdict.suppressed == "too_soon"
+
+
+def test_a_routine_trigger_still_respects_spacing() -> None:
+    """The override is for the four critical signals and nothing else."""
+    ledger = InMemoryLedger()
+    sent(ledger, at=NOW - timedelta(minutes=1))
+    decider = Decider(Policy(), ledger)
+
+    verdict = decider.evaluate(
+        score(RiskBand.CRITICAL, RiskBand.HIGH, triggered_by=SignalType.PHISH_SIM_CLICKED), NOW
+    )
+
+    assert verdict.suppressed == "too_soon"
+
+
+def test_the_urgency_override_can_be_switched_off() -> None:
+    ledger = InMemoryLedger()
+    sent(ledger, at=NOW - timedelta(minutes=1))
+    decider = Decider(Policy(urgent_overrides_spacing=False), ledger)
+
+    verdict = decider.evaluate(score(triggered_by=SignalType.PHISH_CREDENTIALS_SUBMITTED), NOW)
+
+    assert verdict.suppressed == "too_soon"
+
+
+def test_the_urgency_override_does_not_defeat_the_weekly_cap() -> None:
+    """It widens one gate. Every gate downstream of spacing still applies."""
+    ledger = InMemoryLedger()
+    for index in range(3):
+        sent(ledger, at=NOW - timedelta(hours=index + 1), trigger_event_id=f"evt-{index}")
+    decider = Decider(Policy(), ledger)
+
+    verdict = decider.evaluate(score(triggered_by=SignalType.PHISH_CREDENTIALS_SUBMITTED), NOW)
+
+    assert verdict.suppressed == "weekly_cap"
+
+
+def test_the_urgency_override_covers_the_per_type_cooldown_too() -> None:
+    """Fixing only the spacing gate left the inversion where it was.
+
+    The credential submission cleared spacing and was then caught by the
+    per-type cooldown, because the routine message a minute earlier had
+    escalated to the same rung. Two gates, one reason to bypass them.
+    """
+    ledger = InMemoryLedger()
+    sent(
+        ledger,
+        type=InterventionType.TRAINING,
+        at=NOW - timedelta(minutes=1),
+        signal=SignalType.PHISH_SIM_CLICKED,
+    )
+    decider = Decider(Policy(), ledger)
+
+    verdict = decider.evaluate(score(triggered_by=SignalType.PHISH_CREDENTIALS_SUBMITTED), NOW)
+
+    assert verdict.send, f"suppressed by {verdict.suppressed}"
+    assert verdict.type is InterventionType.TRAINING

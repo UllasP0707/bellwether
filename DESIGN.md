@@ -173,7 +173,7 @@ partition and the per-employee scorer needs no cross-partition coordination.
 The tradeoff is that a single pathological employee — an admin account
 generating audit spam — can hot-spot a partition.
 
-## Topics — `[partly built]`
+## Topics — `[built]`
 
 All are created by [`scripts/create_topics.sh`](scripts/create_topics.sh) with
 the partition counts and retention below.
@@ -306,6 +306,24 @@ a per-type cooldown and an escalation ladder make every rung free: an employee
 nudged this morning escalates to training on their next trigger, training's own
 cooldown has never been touched, and the second message lands hours later.
 
+**And spacing has one exception, which rehearsing the demo forced.** The
+scripted incident delivers a phish, records a click, and records a credential
+submission sixty-five seconds later. The click crossed a band and sent a
+message about *file sharing* — correct, that was the dominant category at the
+time — and the credential submission, arriving inside the 24-hour window, was
+suppressed. So the person who had just handed over their password was told to
+review their document shares. Spacing is right in general; a routine message
+being able to block an urgent one is not, and the four signals above are
+precisely the ones whose useful window is minutes.
+
+The override is bounded rather than open: it applies only when the *previous*
+message was not itself urgent, so the worst case is one routine message
+followed by one urgent one rather than a run of them, and the weekly cap and
+the uniqueness fence sit downstream and still apply. Fixing only the spacing
+gate was not enough — the submission then cleared spacing and was caught by the
+per-type cooldown, because the routine message a minute earlier had escalated
+to the same rung. Two gates, one reason to bypass them.
+
 **Recency** exists because a 32-day-old credential submission — already outside
 the scoring lookback, contributing exactly zero to the score it was attached to
 — produced a message telling someone to reset their password *now*. It also
@@ -396,7 +414,7 @@ from Redis, the mart answers "over any period" for any number. Serving trend fro
 an online store means scanning it, and an online store that gets scanned stops
 being fast for the point lookups it exists for.
 
-## Handling employee data — `[partly built]`
+## Handling employee data — `[built]`
 
 This is behavioral data about identifiable people, which is the most sensitive
 category the system could hold.
@@ -432,9 +450,43 @@ category the system could hold.
   Kafka is deliberately excluded. The topics enforce their own retention, and a
   second system racing them to it is how you get two components disagreeing
   about whether data still exists.
-- **Designed.** Deletion: one function resolves a token, purges the dimension
-  row, drops their Redis projection, and lets the score log age out under its
-  own retention (day 10).
+- **Built.** Deletion of one named person, on request. It is one `DELETE`, a
+  Redis projection drop and a handful of warehouse rows, and it is that small
+  entirely because of the event contract above: everything downstream holds a
+  token, so thirty days of Kafka segments, the Parquet in the lake and last
+  March's backup all keep an identifier that now resolves to nobody. Had an
+  address been denormalised onto the event for a nicer dashboard, erasure would
+  mean rewriting a data lake.
+
+  **What it keeps is the more interesting half, and it is reported on every
+  run.** The read audit log stays: a row saying who looked at this person is an
+  accountability record about the *actor*, and deleting it would mean anybody
+  wanting to erase the evidence that they browsed a colleague's risk score need
+  only get that colleague erased. Once the dimension row is gone those rows
+  hold a token that resolves to nobody, so what remains is already
+  pseudonymous. It is a judgment call against a strict reading of a
+  right-to-erasure request, so it is a flag rather than an opinion compiled
+  into a query.
+
+  Verification re-queries every store from scratch rather than trusting what
+  the deletion reported, because a delete that reports its own success is
+  checking that it ran and not that it worked.
+
+  **The live run found a real gap.** Erasing the top-ranked employee left the
+  API returning 404 and the ranking clean — but the 404 said "no score yet"
+  rather than "no such employee". The dimension is an in-process snapshot
+  loaded at startup, so the row was gone, the score was gone, and a running
+  process still held the name. The snapshot now expires, and that bound is a
+  privacy property rather than a cache-tuning knob: erasure is honestly
+  described as complete within five minutes rather than as instant.
+- **Built.** Field-level tokenization, for the case `DELETE` cannot reach.
+  Keyed HMAC rather than a hash — a plain SHA-256 of a corporate address is
+  reversible in practice, because the space is small and enumerable, and that
+  mistake produces something that looks tokenized and is not. Destroying a
+  tenant's key unlinks every token derived from it everywhere at once, which is
+  the only erasure guarantee that holds across a lake and is far too blunt for
+  one person's request. Two mechanisms because they have different reach:
+  per-person deletion, and crypto-shredding for tenant offboarding.
 - **Built.** The read API takes its tenant from the credential and not from the
   request, so there is no parameter a caller can set to reach across one. An
   employee belonging to another tenant returns 404 with a body byte-identical to
@@ -454,6 +506,133 @@ category the system could hold.
   auditing the *ranking* too would bury those reads under a row for every
   dashboard refresh, which is how an audit log becomes unreadable and therefore
   useless.
+
+## Knowing whether it is working — `[built]`
+
+Three things get filed under "observability" and they answer different
+questions, so they are three modules rather than one: metrics for *is it
+healthy*, traces for *what happened to this one thing*, and data contracts for
+*is the data still what it was*. A pipeline with perfect latency and no errors
+can be quietly ingesting half of what it did last week, and neither of the
+first two would notice.
+
+**The metric surface is declared in one module**, for the same reason the
+signal catalog is: a metric name and its label set are a contract with whatever
+queries them, and a name invented at a call site is a name nobody can find.
+
+**Nothing is labelled by employee, event or trigger.** That is a cardinality
+argument — every label value is a series held in memory by every scraping
+Prometheus forever — and also a privacy one. A metrics endpoint is typically
+the least protected surface a service exposes, and "who is risky" is exactly
+what this system is careful about everywhere else. The API is labelled by route
+*template*, never the resolved path, so `/v1/employees/E0042/score` and
+`/v1/employees/E0208/score` are one series rather than a list of who the
+security team has been reading about.
+
+**The stages are instrumented in one place** — the shared Kafka runner. That
+is a consequence of the shape rather than a separate decision: every stage is a
+handler that returns a decision, so counting outcomes, timing the handler and
+continuing the trace all happen once instead of three times in three places
+that drift. Consumer lag has to live there regardless, because it is the one
+number no handler can compute: only the broker knows where the end of the log
+is, and a stage can be healthy by every in-process counter while falling an
+hour behind.
+
+**Tracing is the part that is actually hard.** A trace inside one process is
+solved. This pipeline is four processes joined by three Kafka topics, and the
+connector that fetched a record has exited long before the intervention that
+record causes is decided — so the W3C `traceparent` rides in the message
+headers and each stage continues the trace it was handed. Verified rather than
+asserted: one injected phishing chain, read back out of Jaeger, **nine of nine
+traces spanning all four services**, with the chain that mattered reading
+`produce(phish_credentials_submitted) → normalizer(emitted) → scorer(scored) →
+intervention(sent)`. One trace id answers "why did this person get this
+message".
+
+A caveat worth stating rather than hiding: these are batch consumers, so a
+span's parent has usually already ended. That is what OpenTelemetry `Link` is
+for, and parenting anyway is a deliberate simplification because a trace that
+renders as a waterfall is the thing that makes it useful to look at.
+
+A header that is missing or mangled starts a new trace instead of failing.
+A stage that refused untraced messages would stop working the first time
+somebody replayed a topic with a tool that does not write headers — which is
+every tool.
+
+**The data contracts cover what the 42 dbt tests structurally cannot.** A dbt
+test asserts an invariant about the data as it stands, and every one of them
+passes on an empty table and on the day a connector silently stops returning
+half its record types. These four are *distributional*: they compare a day
+against the fourteen before it, which is a question about history that a test
+scoped to one table cannot ask.
+
+Signal-mix drift is the valuable one and the least obvious. If
+`phish_sim_clicked` was 12% of yesterday's events and is 0% today, no row is
+wrong and no test fails — a source has stopped, and scores across the
+population will drift down over the following week for a reason nobody can see.
+Measured as total variation distance, which reads directly as "this share of
+the mix moved", against a threshold set from the smallest of the four
+connectors rather than from taste.
+
+Run against the real warehouse: a healthy day passes all four; the sparse day
+an Airflow test wrote fails volume at 0.99 and drift at 0.87 and names
+`file_shared_externally -65.2%` as the signal that moved. Every dbt test is
+green on that same day, which is the argument for having these at all.
+
+**Nine alert rules, deliberately** — ten that fire get read and forty do not.
+Two are worth the space. `ConsumerLagGrowing` requires lag to be high *and* not
+falling, because absolute lag is meaningless during a backfill where a stage is
+legitimately thousands behind and catching up. And `NoInterventionsAtAll` is
+the failure nobody notices: a broken trigger, a cooldown misconfigured to a
+month and a scorer that stopped publishing all look identical from outside.
+
+## Where it breaks — `[built]`
+
+Measured rather than estimated. Full method and numbers in
+[docs/LOAD_TEST.md](docs/LOAD_TEST.md).
+
+| | |
+| --- | --- |
+| Ceiling | **736 events/sec** per scorer instance |
+| What sets it | **Three Redis round trips per message — 92% of the budget** |
+| Not what sets it | The O(window) rescore, at 1.35 µs/event |
+| Projected, 12 partitions | ~8,800 events/sec |
+
+**The headline is a correction to this document.** The section below used to
+carry an open question — that recomputing the whole 30-day window on every
+message is O(window) and would be the first thing to bite. It is not. Per-event
+cost is flat at 1.35 µs beyond a few hundred events, and a realistic employee
+carries about fifteen events in window: 0.05 ms, under 4% of the per-message
+budget.
+
+Running the identical pipeline and changing only the online store settles it —
+736 events/sec against Redis, 9,282 in memory. Per message that is 1.359 ms
+against 0.108 ms, so **1.25 ms is three Redis round trips**, on localhost,
+where a round trip is as cheap as it will ever be. The fix is a pipelined
+`ZADD`/`ZREMRANGEBYSCORE`/`ZRANGE` plus a fire-and-forget projection write,
+neither of which touches `score_events`. That is the argument for measuring
+before optimising: the obvious suspect was innocent, and the remedy everyone
+would have reached for — an incremental decay update — would have cost the
+stream/batch parity guarantee to buy a 4% improvement.
+
+**Where the window *would* matter** is set by the noisiest employee rather than
+the average one, and two effects compound. Events are keyed by `employee_id`,
+so one pathological account — a service account writing audit spam — both
+hot-spots its partition *and* carries the most expensive rescore on it. At
+10,000 events in window that partition drops to 73 rescores/sec while the other
+eleven are unaffected. The mitigation is a cap on window size per employee, not
+a faster scorer.
+
+**The read path has its own ceiling and it is not the database.**
+`GET /population/departments` is flat at ~60 req/s from two concurrent clients
+upward while latency grows linearly — the signature of a serialised resource,
+and Little's Law predicts it almost exactly (64 clients at 75 req/s gives
+0.85 s; measured p50 is 0.75 s). The endpoint pages the whole scored population
+out of Redis and folds it in one Python process under the GIL. It is the
+limitation this document already described — "fine for one company's headcount
+and the wrong shape for a trend" — with a number attached, and the answer is
+not a connection pool. It is that the query belongs in the marts, where the
+equivalent already exists.
 
 ## What I would do differently at real scale
 

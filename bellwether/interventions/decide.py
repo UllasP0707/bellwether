@@ -111,12 +111,19 @@ class Decider:
         # `cooldown_hours` is then per-type and much longer, so a genuinely new
         # critical signal can still escalate tomorrow, while the same *kind* of
         # message does not repeat for three days.
+        # Both are evaluated against one override rather than each having its
+        # own. Fixing only the first left the inversion exactly where it was:
+        # the credential submission cleared spacing and was then caught by the
+        # per-type cooldown, because the routine message a minute earlier had
+        # been the same rung. Two gates, one reason to bypass them.
+        urgent = self._urgent_override(trigger, score)
+
         recent = self.ledger.last_sent_at(score.tenant_id, score.employee_id)
-        if cooldown_active(recent, now, self.policy.min_spacing_hours):
+        if cooldown_active(recent, now, self.policy.min_spacing_hours) and not urgent:
             return _suppress(SuppressionReason.TOO_SOON)
 
         last = self.ledger.last_sent_at(score.tenant_id, score.employee_id, rung)
-        if cooldown_active(last, now, self.policy.cooldown_hours):
+        if cooldown_active(last, now, self.policy.cooldown_hours) and not urgent:
             return _suppress(SuppressionReason.COOLDOWN)
 
         week = self.ledger.count_since(score.tenant_id, score.employee_id, now - timedelta(days=7))
@@ -130,6 +137,37 @@ class Decider:
             prior_in_window=prior,
             disengaged=disengaged,
         )
+
+    def _urgent_override(self, trigger: Trigger, score: RiskScoreEvent) -> bool:
+        """Whether a critical signal may cut ahead of the spacing gate.
+
+        Found by rehearsing the demo, and it is a real inversion rather than a
+        presentation problem. The scripted incident delivers a phish, records a
+        click, and records a credential submission sixty-five seconds later.
+        The click crossed a band and sent a message about *file sharing* --
+        correct, that was the dominant category at the time -- and the
+        credential submission, arriving inside the 24-hour spacing window, was
+        suppressed. So the person who had just handed over their password was
+        told to review their document shares.
+
+        Spacing is right in general: two messages an hour apart is how a system
+        like this gets muted. But a routine message must not be able to block
+        an urgent one, and the four signals in `TRIGGER_SIGNALS` are exactly
+        the ones whose useful window is minutes.
+
+        **Once**, though. The override applies only when the previous message
+        was *not* itself urgent, so the worst case is one routine message
+        followed by one urgent one, rather than an unbounded run of them. The
+        weekly cap and the uniqueness fence are downstream of it and still
+        apply, so this widens two gates and not the policy.
+        """
+        if trigger is not Trigger.CRITICAL_SIGNAL or not self.policy.urgent_overrides_spacing:
+            return False
+
+        previous = self.ledger.history(score.tenant_id, score.employee_id, limit=1)
+        if not previous:  # pragma: no cover - spacing only bites when one exists
+            return False
+        return previous[0].trigger_signal not in TRIGGER_SIGNALS
 
     def _is_recent(self, score: RiskScoreEvent, now: datetime) -> bool:
         """Whether the behaviour behind this score is recent enough to act on.

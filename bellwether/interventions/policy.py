@@ -131,6 +131,11 @@ class Policy:
     min_spacing_hours: int = 24
     weekly_cap: int = 3
     ladder_window_days: int = 30
+    # Whether one of the four critical signals may cut ahead of
+    # `min_spacing_hours`. On by default, and bounded: it applies only when
+    # the previous message was not itself urgent. See `Decider._urgent_override`
+    # for the inversion that made it necessary.
+    urgent_overrides_spacing: bool = True
     allow_manager_notification: bool = False
 
     def meets_threshold(self, band: RiskBand) -> bool:

@@ -7,7 +7,7 @@ CLI := $(PY) -m bellwether.generator.cli
 .PHONY: help install install-dbt up down logs topics seed backfill backfill-kafka live \
         demo-incident score consume serve intervene test test-all lint fmt clean \
         batch parity warehouse dbt dags dag-daily backfill-twice \
-        observe trace-demo contracts loadtest infra erase
+        observe trace-demo contracts loadtest infra erase demo demo-reset
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -134,3 +134,9 @@ infra: ## Validate the Terraform and the Kubernetes manifests (never applied)
 
 erase: ## Dry-run erasure for one employee (EMPLOYEE=E0042)
 	$(PY) -m bellwether.cli privacy erase --employee $(or $(EMPLOYEE),E0042)
+
+demo: ## The 90-second narrative, end to end (docs/DEMO.md)
+	./scripts/demo.sh
+
+demo-reset: ## Put the stack into the state the demo narrative assumes
+	./scripts/demo_reset.sh

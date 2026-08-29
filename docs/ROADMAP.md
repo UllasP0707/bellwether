@@ -265,31 +265,118 @@ a workaround: Airflow, PySpark and dbt cannot share dependency pins, so each
 gets its own and the DAGs shell into them. Same isolation a
 KubernetesPodOperator buys, minus the cluster.
 
-## Day 8 — operability
+## Day 8 — operability ✅
 
-- [ ] OpenTelemetry traces from connector through intervention
-- [ ] Consumer lag, scoring latency, intervention send-rate metrics
-- [ ] Data-quality contracts: null rates, signal-mix drift, late-arrival rate
-- [ ] Grafana dashboard
+- [x] OpenTelemetry traces from producer through intervention, propagated in
+      Kafka headers
+- [x] 24 metrics in one declared surface: consumer lag, scoring latency,
+      handler time, send rate, copy generation, API percentiles
+- [x] Data-quality contracts: null rate, volume shift, signal-mix drift,
+      late arrivals — run as their own task in the daily DAG
+- [x] Prometheus, Grafana (27 panels) and Jaeger behind a compose profile
+- [x] 9 alert rules saying what "unhealthy" means
+- [x] 21 new tests (379 total), CI green
 
-## Day 9 — load test
+| Check | Result |
+| --- | --- |
+| One incident through the whole pipeline | **9 of 9 traces span all four services** |
+| The chain that mattered | `produce(credentials_submitted)` → `normalizer(emitted)` → `scorer(scored)` → `intervention(sent)` |
+| Contracts on a healthy day | all four pass |
+| Contracts on a day the pipeline barely wrote | volume 0.99, drift 0.87, naming `file_shared_externally -65.2%` |
+| dbt tests on that same day | all green — which is the argument for having these |
+| API metric cardinality | route templates only; `E0042` and `E9999` are one series |
 
-- [ ] Drive the generator to saturation; find where it breaks
-- [ ] Record sustained events/sec, p50/p95/p99 end-to-end, API p99, cost/M events
-- [ ] `docs/LOAD_TEST.md` with the numbers and the bottleneck analysis
+The trace is the day's headline. A connector fetching a record and the
+intervention it eventually causes are four processes and three topics apart and
+never overlap in time, so without context propagation there are four unrelated
+traces and no mechanical answer to *why did this person get this message*.
 
-## Day 10 — infrastructure and data protection
+Nothing is labelled by employee. That is a cardinality argument and a privacy
+one: a metrics endpoint is the least protected surface a service exposes, and
+"who is risky" is what this system is careful about everywhere else.
 
-- [ ] Terraform: MSK/Kinesis, S3, RDS, ElastiCache, EKS, IAM
-- [ ] Helm/manifests for the consumers
-- [ ] Retention job, employee deletion path, field-level tokenization
+## Day 9 — load test ✅
 
-## Day 11 — the artifacts that get read
+- [x] Four scenarios, each isolating one suspect
+- [x] Scoring cost curve, online-store cost, full pipeline, read path under
+      concurrency
+- [x] `docs/LOAD_TEST.md` with the numbers, the attribution and the fix
+- [x] 11 new tests (390 total), CI green
 
-- [ ] Finish `DESIGN.md`: tradeoffs, rejected alternatives, scale limits
-- [ ] `docs/RUNBOOK.md`: what breaks and what to do
-- [ ] 90-second demo video following the incident narrative
-- [ ] README with architecture diagram and the load-test numbers up top
+| Check | Result |
+| --- | --- |
+| Ceiling | **736 events/sec** per scorer instance |
+| What sets it | **three Redis round trips — 92% of the per-message budget** |
+| Same run, in-memory store | 9,282 events/sec |
+| Scoring cost per event | flat at 1.35 µs — linear, and not the bottleneck |
+| Read path, point lookup | 957 req/s, p99 40 ms |
+| Read path, department rollup | 60 req/s, **flat from two clients up** |
+
+**The headline is a correction to DESIGN.md.** The document had carried an open
+question since day 3 — that recomputing the whole window per message is
+O(window) and would bite first. It does not: a realistic employee carries
+fifteen events, which is under 4% of the budget. Changing only the online store
+and rerunning settled it, and the remedy everyone would have reached for (an
+incremental decay update) would have cost the stream/batch parity guarantee to
+buy 4%.
+
+**Two bugs were in the harness rather than the system**, both written up. An
+end-to-end p50 of *minus 24 seconds*, because the accelerated simulator dates a
+phishing chain up to 90 minutes ahead of the wall clock — the scorer now counts
+and clamps future-dated events instead of feeding negatives into a histogram
+whose first bucket starts at zero. And five identical runs reporting 807, 260,
+783, 737 and 389 events/sec, because the timing included consumer-group join
+and the Redis window was never cleared between runs. Fixed, three consecutive
+runs gave 804, 845, 834.
+
+## Day 10 — infrastructure and data protection ✅
+
+- [x] Per-person erasure, with verification that re-queries every store
+- [x] Field-level tokenization: keyed HMAC, deterministic, shreddable
+- [x] Terraform: VPC, MSK, S3, RDS, ElastiCache, EKS, IAM, KMS, alarms
+- [x] Kubernetes: 23 objects, KEDA scaling on lag, default-deny networking
+- [x] `terraform validate` and manifest checks in CI
+- [x] 29 new tests (419 total), CI green
+
+| Check | Result |
+| --- | --- |
+| Erasing the top-ranked employee | 1 dimension row, 3 Redis keys, the ranking, 29 warehouse rows, 1 ledger row |
+| The API afterwards | 404, and absent from the ranking |
+| Independent verification | clean |
+| A bystander | fully intact, 4 findings |
+| Terraform | 51 resources, `validate` **passes** |
+| Terraform `apply` | **never run** — no AWS account, and infra/README.md leads with that |
+
+Erasure is small only because of a day-1 decision: events carry a token and PII
+lives in one table, so everything downstream keeps an identifier that resolves
+to nobody.
+
+**The live run found a real gap.** The API returned 404 — but it said "no score
+yet" rather than "no such employee", because the dimension is an in-process
+snapshot loaded at startup. The row was gone, the score was gone, and a running
+process still held the name. The snapshot now expires, and that bound is a
+privacy property rather than a cache setting: erasure is complete within five
+minutes, not instantly, and saying so is better than claiming otherwise.
+
+## Day 11 — the artifacts that get read ✅
+
+- [x] `DESIGN.md` finished: every section `[built]`, plus operability and a
+      scale-limits section written from measurements
+- [x] `docs/RUNBOOK.md`: organised by symptom, because that is what you have
+      at 3am
+- [x] `docs/DEMO.md` and `scripts/demo.sh`: the 90-second narrative, runnable
+- [x] README rewritten around what the system does
+
+**The video is not in this repository.** `scripts/demo.sh` exists so recording
+it is a screen capture rather than a performance — the script does the typing,
+the pacing is a variable, and every number that appears comes from the system.
+
+`scripts/demo_reset.sh` exists because the first rehearsal did not work. Days
+of testing had left the demo employee pinned at 100.0 from 56 events, so the
+incident moved nothing and "watch the band change" was false, and the
+intervention beat reported 192 messages where the story says one. Neither was a
+bug — both are what a long-lived environment looks like — and a demo that only
+works on a machine nobody has used is one that fails in front of someone.
 
 ## Deliberately out of scope
 
