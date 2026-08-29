@@ -59,7 +59,7 @@ output truncates columns.
 
 **0:10–0:20 — where the employee starts.**
 
-Show `scores --employee E0042`.
+Show `scores --employee $EMPLOYEE` — whoever the reset named.
 
 > A decayed weighted sum over a thirty-day window. Explainable on purpose —
 > every contribution is attributable to a signal, because a security team will
