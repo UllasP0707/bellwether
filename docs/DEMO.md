@@ -7,10 +7,26 @@ This document is the shot list and the script — what to show, in what order,
 and what to say over it.
 
 ```bash
-make up && make topics && make seed && make backfill-kafka
-make normalize && make score-stream     # so there is history to move against
+make up && make topics && make seed
+./scripts/demo_reset.sh                 # 30d of history, scored, verified
 ./scripts/demo.sh                       # PACE=4 to slow it down
 ```
+
+**Run the reset first and read its last line.** The behaviour draw is random —
+`generate backfill` fixes the population but not the events — so the default
+subject sometimes lands in `critical` before the demo starts, and an incident
+cannot move somebody already at the top of the scale. The reset checks for that
+and nominates a replacement when it happens:
+
+```
+E0042 came out critical this time -- the incident would not move them.
+the behaviour draw is random; E0112 landed in 'elevated' and works.
+
+ready. now run: EMPLOYEE=E0112 ./scripts/demo.sh
+```
+
+Use whichever employee it names. Every number in the narrative is read from the
+system, so nothing else changes.
 
 ---
 

@@ -136,18 +136,41 @@ terraform plan  -var environment=dev
 terraform apply -var environment=dev
 ```
 
-Tearing it down needs two overrides, and they are variables rather than
-literals for a reason. `rds_deletion_protection` defaults to `true` in every
-environment including dev, which is correct and which makes `terraform destroy`
-fail partway — leaving an operator with a half-destroyed environment, a running
-meter, and instructions to go edit `rds.tf`. That is the moment people give up
-and leave infrastructure running, so the escape hatch is explicit and visible
-in shell history:
+Tearing it down takes **two steps**, and the first one is not optional.
+
+`rds_deletion_protection` defaults to `true` in every environment including
+dev. That is correct, and it means `terraform destroy` fails partway through:
+
+```
+InvalidParameterCombination: Cannot delete protected DB Instance,
+please disable deletion protection and try again.
+```
+
+Passing `-var rds_deletion_protection=false` to `destroy` **does not fix
+this**, which is the part worth knowing before you are standing in it.
+`destroy` computes the desired state from your variables and then issues
+deletes; it does not first *apply* the attribute change. The instance in AWS
+still has the flag set. So:
 
 ```bash
+# 1. actually turn the flag off, in AWS
+terraform apply -var environment=dev \
+  -var rds_deletion_protection=false \
+  -var rds_skip_final_snapshot=true
+
+# 2. then tear down
 terraform destroy -var environment=dev \
   -var rds_deletion_protection=false \
   -var rds_skip_final_snapshot=true
+```
+
+If you are already stuck — destroy failed, most of the environment is gone, and
+re-running `apply` would recreate all of it — clear the flag out of band and
+re-run `destroy` alone:
+
+```bash
+aws rds modify-db-instance --db-instance-identifier bellwether-dev \
+  --no-deletion-protection --apply-immediately
 ```
 
 Budget roughly **$1.35/hour** for the full environment, two thirds of it MSK
