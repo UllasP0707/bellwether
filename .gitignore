@@ -14,3 +14,14 @@ target/
 dbt_packages/
 logs/
 .venv-dbt/
+
+# Terraform. The lock file is deliberately *not* here -- it pins provider
+# hashes and belongs in the repository.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+# Backend configs embed the account id.
+infra/terraform/env/*.backend.hcl
+!infra/terraform/env/example.backend.hcl

@@ -64,6 +64,25 @@ variable "rds_instance_class" {
   default = "db.t4g.medium"
 }
 
+# --- teardown safety ----------------------------------------------------------
+#
+# Both default to the safe value, so nothing changes unless someone asks. They
+# exist as variables rather than literals because the alternative is editing
+# `rds.tf` mid-teardown, and an override in shell history is easier to review
+# than a commit that flips a safety flag and might not get flipped back.
+
+variable "rds_deletion_protection" {
+  type        = bool
+  default     = true
+  description = "Set false only to tear down a disposable environment."
+}
+
+variable "rds_skip_final_snapshot" {
+  type        = bool
+  default     = false
+  description = "Set true only for an environment that has never held real data."
+}
+
 variable "cache_node_type" {
   type        = string
   default     = "cache.m7g.large"

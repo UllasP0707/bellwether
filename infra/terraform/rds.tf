@@ -60,17 +60,28 @@ resource "aws_db_instance" "this" {
   backup_window           = "03:00-04:00"
   maintenance_window      = "sun:04:30-sun:05:30"
 
-  # On in every environment including dev. The cost of an accidental destroy
-  # in dev is a rebuild; the cost of learning the flag was off in prod is the
-  # intervention ledger, which is the one table here that cannot be
+  # Defaults on in every environment including dev. The cost of an accidental
+  # destroy in dev is a rebuild; the cost of learning the flag was off in prod
+  # is the intervention ledger, which is the one table here that cannot be
   # recomputed from anything.
-  deletion_protection = true
+  #
+  # A variable rather than a literal, because the first real teardown showed
+  # what a literal costs: `terraform destroy` fails on the protected instance
+  # after destroying part of the environment, and the fix is to edit this file,
+  # apply, and destroy again. An operator holding a half-destroyed environment
+  # and a billing meter is being asked to edit source, which is the moment
+  # people give up and leave it running. The default is unchanged; the escape
+  # hatch is now explicit and auditable in shell history:
+  #
+  #   terraform destroy -var environment=dev -var rds_deletion_protection=false
+  deletion_protection = var.rds_deletion_protection
 
   # Snapshot on the way out. `skip_final_snapshot = true` is the default in
   # most examples and it turns a mistaken `terraform destroy` into permanent
-  # loss.
-  skip_final_snapshot       = false
-  final_snapshot_identifier = "${local.name}-final"
+  # loss. Same override reasoning: a demo environment that has never held real
+  # data leaves a snapshot behind that bills quietly and forever.
+  skip_final_snapshot       = var.rds_skip_final_snapshot
+  final_snapshot_identifier = var.rds_skip_final_snapshot ? null : "${local.name}-final"
 
   performance_insights_enabled    = true
   performance_insights_kms_key_id = aws_kms_key.data.arn
